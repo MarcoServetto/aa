@@ -1,6 +1,5 @@
 package com.cliffc.aa.HM;
 
-import com.cliffc.aa.HM.HM;
 import com.cliffc.aa.HM.HM.*;
 import org.junit.Before;
 import org.junit.Test;
@@ -461,40 +460,40 @@ public class TestHMMarco {
         self
         };
       @{s=s, z=z};
+    notOne = (n.s @{
+        isZero = {unused ->b.true},
+        pred   = err
+        succ   = {unused -> (n.s n.z)},
+        add    = {o-> o}
+        nope   = void
+        });
     one = (n.s n.z);
     two = (one.add one);
     three =(n.s two);
-    @{b=b,n=n, one=one,two=two,three=three}
+    @{b=b,n=n, one=one,two=two,three=three, notOne=notOne}
     ""","""
     @{
-      b=@{ //ok, true and false stay not unified if defined alone
+      b=@{
         false=A:@{
           and={B->A},
           or={C->C},
-          thenElse={D {()->E} ->E}
-          },
+          thenElse={D{()->E}->E}},
         true=F:@{
           and={G->G},
           or={H->F},
-          thenElse={{()->I} J ->I}
+          thenElse={{()->I}J->I}
           }
         },
       n=@{
-        //nat type now repeats the bools as the unified type
-        //Yes, this is what I was missing, repeating bool type inside nat allows
-        //the outside bools to stay not unified
         s={
           K:@{
-            add={//THIS IS WRONG /STRANGE
-              L:@{ succ={()->L} }//add take a recird with just succ and returns a record with just succ
-              ->L
-              },
+            add={  L:@{succ={()->L}}->L  },
             isZero={
               M->
               N:@{
                 and={N->N},
                 or={N->N},
-                thenElse={ {()->O} {()->O} -> O }
+                thenElse={{()->O}{()->O}->O}
                 }
               },
             pred={P->K},
@@ -502,53 +501,60 @@ public class TestHMMarco {
             }
           ->K
           },
-        z=K//also add of zero is unified in that strange way
+        z=K
         },
-      one=R:@{//one is not nat; that is, K
-        //but one is obtained by using the s function, returning a K
-        add={
-          S:@{
-            succ={()->S}
-            }
-          ->S
-          },
+      notOne=R:@{
+        add={  S:@{succ={()->S}}->S  },
         isZero={
           T->
           U:@{
             and={U->U},
             or={U->U},
-            thenElse={ {()->V21} {()->V21}->V21}
+            thenElse={ {()->V21}{()->V21}->V21} 
             }
+          },
+        nope=Missing field nope in A:@{
+          add={  B:@{succ={()->B}}->B  },
+          isZero={
+            C->
+            D:@{
+              and={D->D},
+              or={D->D},
+              thenElse={{()->E}{()->E}->E}
+              }
+            },
+          pred={F->A},
+          succ={G->A}
           },
         pred={V22->R},
         succ={V23->R}
         },
-      three=V24:@{//three has all the methods a nat should have
-        add={  V25:@{ succ={()->V25} }->V25  },
+      one=V24:@{
+        add={V25:@{succ={()->V25}}->V25},
         isZero={
           V26->
-          V27:@{
-            and={V27->V27},
-            or={V27->V27},
-            thenElse={ {()->V28} {()->V28} ->V28 }
-            }
+          V27:@{and={V27->V27},or={V27->V27},thenElse={{()->V28}{()->V28}->V28}}
           },
         pred={V29->V24},
-        succ={()->V24}
+        succ={V30->V24}
         },
-      two=V30:@{//two also have those. But it is made as 1+1 and
-        //the add function should return a record with just succ!
-        add={  V31:@{succ={()->V31}} ->V31 },
+      three=V31:@{
+        add={V32:@{succ={()->V32}}->V32},
         isZero={
-          V32->
-          V33:@{
-            and={V33->V33},
-            or={V33->V33},
-            thenElse={ {()->V34} {()->V34} ->V34 }
-            }
+          V33->
+          V34:@{and={V34->V34},or={V34->V34},thenElse={{()->V35}{()->V35}->V35}}
           },
-        pred={V35->V30},
-        succ={()->V30}
+        pred={V36->V31},
+        succ={()->V31}
+        },
+      two=V37:@{
+        add={V38:@{succ={()->V38}}->V38},
+        isZero={
+          V39->
+          V40:@{and={V40->V40},or={V40->V40},thenElse={{()->V41}{()->V41}->V41}}
+          },
+        pred={V42->V37},
+        succ={()->V37}
         }
       }
       """);}
