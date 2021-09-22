@@ -9,12 +9,12 @@ import java.util.HashMap;
 import static com.cliffc.aa.type.TypeFld.Access;
 
 /**
-   Memory type; the state of all of memory; memory edges order memory ops.
+   Memory type; the state of all memory; memory edges order memory ops.
    Produced at the program start, consumed by all function calls, consumed be
-   Loads, consumed and produced by Stores.  Can be broken out in the "equiv-
-   alence class" (Alias#) model of memory over a bulk memory to allow more fine
-   grained knowledge.  Memory is accessed via Alias#s, where all TypeObjs in an
-   Alias class are Meet together as an approximation.
+   Loads, consumed and produced by Stores.  Can be broken out in the
+   "equivalence class" (Alias#) model of memory over a bulk memory to allow
+   more fine-grained knowledge.  Memory is accessed via Alias#s, where all
+   TypeObjs in an Alias class are Meet together as an approximation.
 
    Conceptually, each alias# represents an infinite set of pointers - broken
    into equivalence classes.  We can split such a class in half - some pointers
@@ -60,7 +60,7 @@ public class TypeMem extends Type<TypeMem> {
   // A cache of sharpened pointers.  Pointers get sharpened by looking up their
   // aliases in this memory (perhaps merging several aliases).  The process is
   // recursive and "deeply" sharpens pointers, and is somewhat expensive.
-  // Maintain a cache of prior results.  Not related to the objects Type, so
+  // Maintain a cache of prior results.  Not related to the object's Type, so
   // not part of the hash/equals checks.  Optional.  Lazily filled in.
   private HashMap<TypeMemPtr,TypeMemPtr> _sharp_cache;
 
@@ -111,7 +111,6 @@ public class TypeMem extends Type<TypeMem> {
   }
   // Never part of a cycle, so the normal check works
   @Override public boolean cycle_equals( Type o ) { return equals(o); }
-  private static final char[] LIVEC = new char[]{' ','#','R','3'};
   @Override public SB str( SB sb, VBitSet dups, TypeMem mem, boolean debug ) {
     if( this==FULL ) return sb.p("[ all ]");
     if( this==EMPTY) return sb.p("[_____]");
@@ -368,6 +367,7 @@ public class TypeMem extends Type<TypeMem> {
       if( ts._open )
         return BitsAlias.FULL;  // Generic open struct points to all
       for( TypeFld tfld : ts.flds() ) {
+        if( Util.eq(tfld._fld,"^") ) continue; // Display is not actually reachable from a struct after the parse
         Type fld = tfld._t;
         if( TypeMemPtr.OOP.isa(fld) )
           fld = TypeMemPtr.OOP;                      // All possible pointers
@@ -476,6 +476,7 @@ public class TypeMem extends Type<TypeMem> {
   }
 
   // Everything NOT in the 'escs' is flattened to UNUSED.
+  // Everything YES in the 'escs' is flattened to SCALAR.
   public TypeMem remove_no_escapes( BitsAlias escs, String fld, Type live ) {
     TypeObj[] tos = new TypeObj[Math.max(_pubs.length,escs.max()+1)];
     for( int i=1; i<tos.length; i++ )
@@ -505,20 +506,21 @@ public class TypeMem extends Type<TypeMem> {
   }
 
   // True if field is modifiable across any alias
-  public boolean fld_is_mod( BitsAlias aliases, String fld) {
+  public boolean fld_is_mod( BitsAlias aliases, String name) {
     for( int alias : aliases ) {
       if( alias != 0 ) {
         TypeObj to = at(alias);
         if( !(to instanceof TypeStruct) ) return true;
         TypeStruct ts = (TypeStruct)to;
-        int idx = ts.fld_find(fld);
-        if( idx == -1 || ts.fld(idx)._access != Access.Final )
-          return true;          // Cannot check for R/O here, because R/O can lift to R/W
+        TypeFld fld = ts.fld_find(name);
+        if( fld==null || fld._access != Access.Final )
+          return true; // Cannot check for R/O here, because R/O can lift to R/W
       }
     }
     return false;
   }
 
+  // For live-ness purposes, flatten all field contents.
   public TypeMem flatten_fields() {
     TypeObj to, tof=null;
     int i; for( i=1; i< _pubs.length; i++ ) {

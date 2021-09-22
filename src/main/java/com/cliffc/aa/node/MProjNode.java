@@ -3,6 +3,7 @@ package com.cliffc.aa.node;
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
 import com.cliffc.aa.type.*;
+import com.cliffc.aa.tvar.TV2;
 
 import static com.cliffc.aa.AA.MEM_IDX;
 
@@ -43,12 +44,12 @@ public class MProjNode extends ProjNode {
     return c.oob();
   }
 
-  //@Override public TV2 new_tvar( String alloc_site) { return TV2.make_mem(this,alloc_site); }
+  @Override public TV2 new_tvar( String alloc_site) { return null; }
 
-  @Override public void add_flow_use_extra(Node chg) {
-    if( chg instanceof CallNode ) { // If the Call changes value
-      Env.GVN.add_flow(chg.in(MEM_IDX));       // The called memory   changes liveness
-      Env.GVN.add_flow(((CallNode)chg).fdx()); // The called function changes liveness
+  @Override public void add_work_use_extra(Work work, Node chg) {
+    if( chg instanceof CallNode ) {    // If the Call changes value
+      work.add(chg.in(MEM_IDX));       // The called memory   changes liveness
+      work.add(((CallNode)chg).fdx()); // The called function changes liveness
     }
   }
 

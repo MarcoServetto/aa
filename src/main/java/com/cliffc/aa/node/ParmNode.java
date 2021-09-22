@@ -1,9 +1,9 @@
 package com.cliffc.aa.node;
 
-import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
 import com.cliffc.aa.Parse;
 import com.cliffc.aa.type.Type;
+import com.cliffc.aa.type.TypeFld;
 
 import static com.cliffc.aa.AA.ARG_IDX;
 import static com.cliffc.aa.AA.MEM_IDX;
@@ -16,6 +16,9 @@ public class ParmNode extends PhiNode {
   final String _name;    // Parameter name
   public ParmNode( int idx, String name, Node fun, ConNode defalt, Parse badgc) {
     this(idx,name,fun,defalt._t,defalt,badgc);
+  }
+  public ParmNode( TypeFld fld, Node fun, ConNode defalt, Parse badgc) {
+    this(fld._order,fld._fld,fun,fld._t,defalt,badgc);
   }
   public ParmNode( int idx, String name, Node fun, Type tdef, Node defalt, Parse badgc) {
     super(OP_PARM,fun,tdef,defalt,badgc);
@@ -70,7 +73,7 @@ public class ParmNode extends PhiNode {
     if( !opt_mode._CG && fun.has_unknown_callers() )
       return val(1);
     Node mem = fun.parm(MEM_IDX);
-    // All callers known; merge the wired & flowing ones
+    // All callers' known; merge the wired & flowing ones
     Type t = Type.ANY;
     for( int i=1; i<_defs._len; i++ ) {
       if( fun.val(i)==Type.XCTRL || fun.val(i)==Type.ANY ) continue; // Only meet alive paths
@@ -84,29 +87,24 @@ public class ParmNode extends PhiNode {
     // High, but valid, values like choice-functions need to pass thru,
     // so following Calls agree that SOME function will be called.
     // Check against formals; if OOB, always produce an error.
-    Type formal = fun.formal(_idx);
-    // Good case:
-    if( t.isa(formal) ) return t.simple_ptr();
-    return Type.ALL;
+    TypeFld arg = fun._sig._formals.fld_find(_name);
+    // Good case: nothing in signature (parm is dead, so legit), type needs to fall, or it isa formal.
+    if( arg==null || t.above_center() || t.isa(arg._t) ) return t.simple_ptr();
+    return _t;
   }
 
   // If an input to a Mem Parm changes, the flow results of other Parms can change
-  @Override public void add_flow_use_extra(Node chg) {
+  @Override public void add_work_use_extra(Work work, Node chg) {
     if( is_mem() )
       for( Node parm : in(0)._uses )
         if( parm instanceof ParmNode && parm != this )
-          Env.GVN.add_flow(parm);
+          work.add(parm);
   }
 
-  //@Override public TV2 new_tvar(String alloc_site) {
-  //  if( _name==null ) return null; // Wait till initialized
-  //  return _idx==MEM_IDX ? TV2.make_mem(this,alloc_site) : TV2.make_leaf(this,alloc_site);
-  //}
-  //
-  //// While Parms are mostly Phis (and yes for value flows), during unification
-  //// Parms are already treated by the H-M algo, and (via fresh_unify) get
-  //// "fresh" TVars for every input path.
-  //@Override public boolean unify( boolean test ) { return false; }
+  // While Parms are mostly Phis (and yes for value flows), during unification
+  // Parms are already treated by the H-M algo, and (via fresh_unify) get
+  // "fresh" TVars for every input path.
+  @Override public boolean unify( Work work ) { return false; }
 
   @Override public ErrMsg err( boolean fast ) {
     if( !(in(0) instanceof FunNode) ) return null; // Dead, report elsewhere
@@ -119,12 +117,12 @@ public class ParmNode extends PhiNode {
     for( int i=1; i<_defs._len; i++ ) {
       if( fun.val(i)==Type.XCTRL ) continue;// Ignore dead paths
       Type argt = mem == null ? in(i)._val : in(i).sharptr(mem.in(i)); // Arg type for this incoming path
-      if( argt!=Type.ALL && !argt.isa(formal) ) { // Argument is legal?  ALL args are in-error elsewhere
+      if( argt!=Type.ALL && !argt.above_center() && !argt.isa(formal) ) { // Argument is legal?  ALL args are in-error elsewhere
         // The merge of all incoming calls for this argument is not legal.
         // Find the call bringing the broken args, and use it for error
         // reporting - it MUST exist, or we have a really weird situation
         for( Node def : fun._defs ) {
-          if( def instanceof CProjNode ) {
+          if( def instanceof CProjNode && def.in(0) instanceof CallNode ) {
             CallNode call = (CallNode)def.in(0);
             if( call.nargs() != fun.nargs() )
               return null;      // #args errors reported before bad-args

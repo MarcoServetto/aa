@@ -2,17 +2,21 @@ package com.cliffc.aa.node;
 
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
+import com.cliffc.aa.type.*;
 import com.cliffc.aa.tvar.TV2;
-import com.cliffc.aa.type.Type;
-import com.cliffc.aa.type.TypeMem;
-import com.cliffc.aa.type.TypeTuple;
+import static com.cliffc.aa.AA.unimpl;
 
 // Proj data
 public class ProjNode extends Node {
   public int _idx;
   public ProjNode( Node head, int idx ) { this(OP_PROJ,head,idx); }
   public ProjNode( int idx, Node... ns ) { super(OP_PROJ,ns); _idx=idx; }
-  ProjNode( byte op, Node ifn, int idx ) { super(op,ifn); _idx=idx; }
+  ProjNode( byte op, Node ifn, int idx ) {
+    super(op,ifn);
+    _idx=idx;
+    if( in(0) instanceof NewNode )
+      _tvar = in(0).tvar();     // Pre-unify
+  }
   @Override public String xstr() { return "DProj"+_idx; }
 
   // Strictly reducing
@@ -36,15 +40,15 @@ public class ProjNode extends Node {
   }
 
   // Unify with the parent TVar sub-part
-  @Override public boolean unify( boolean test ) {
-    if( in(0) instanceof NewNode ) { // TODO: Not really a proper use of Proj
-      NewNode nnn = (NewNode)in(0);
-      TV2 tv = tvar();
-      if( tv.is_base() && tv._type==nnn._tptr ) return false; // No progress
-      return tv.unify(TV2.make("Ptr",this,"DProj_NewNode",nnn),test);
-    }
-    TV2 tv0 = tvar(0);
-    return tv0._args!=null && tv0.unify_at(_idx,tvar(),test);
+  @Override public boolean unify( Work work ) {
+    TV2 tv = tvar();
+    if( in(0) instanceof NewNode ) // TODO: Not really a proper use of Proj
+      return tv.unify(tvar(0),work);
+    if( in(0) instanceof CallEpiNode ) // Only DProj#2 and its the return value
+      return tv.unify(tvar(0),work);
+    if( in(0) instanceof CallNode )
+      return tv.unify(in(0).tvar(_idx),work); // Unify with Call arguments
+    throw unimpl();
   }
 
   public static ProjNode proj( Node head, int idx ) {

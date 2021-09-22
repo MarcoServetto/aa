@@ -2,17 +2,22 @@ package com.cliffc.aa.node;
 
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
+import com.cliffc.aa.tvar.TV2;
 import com.cliffc.aa.type.*;
 import com.cliffc.aa.util.Ary;
 import org.jetbrains.annotations.NotNull;
 
-import static com.cliffc.aa.AA.*;
+import static com.cliffc.aa.AA.MEM_IDX;
+import static com.cliffc.aa.AA.REZ_IDX;
 
 // Allocates a TypeObj and produces a Tuple with the TypeObj and a TypeMemPtr.
 //
 // NewNodes have a unique alias class - they do not alias with any other
 // NewNode, even if they have the same type.  Upon cloning both NewNodes get
 // new aliases that inherit (tree-like) from the original alias.
+//
+// The inputs mirror the standard input pattern; CTL_IDX is null, MEM_IDX is
+// null, DSP_IDX is the display, and the fields follow.
 
 public abstract class NewNode<T extends TypeObj<T>> extends Node {
   // Unique alias class, one class per unique memory allocation site.
@@ -37,9 +42,9 @@ public abstract class NewNode<T extends TypeObj<T>> extends Node {
   // closures so variable stores can more easily fold into them.
 
   // Takes a parent alias, and splits a child out from it.
-  public NewNode( byte type, int par_alias, T to         ) { super(type,(Node)null); _init(BitsAlias.new_alias(par_alias),to); }
+  public NewNode( byte type, int par_alias, T to         ) { super(type,null,null); _init(BitsAlias.new_alias(par_alias),to); }
   // Takes a alias and a field and uses them directly
-  public NewNode( byte type, int     alias, T to,Node fld) { super(type, null, fld); _init(                        alias, to); }
+  public NewNode( byte type, int     alias, T to,Node fld) { super(type, null, null, fld); _init( alias, to); }
   private void _init(int alias, T ts) {
     if( _elock ) unelock();    // Unlock before changing hash
     _alias = alias;
@@ -48,9 +53,6 @@ public abstract class NewNode<T extends TypeObj<T>> extends Node {
   }
   @Override public String xstr() { return "New"+"*"+_alias; } // Self short name
   String  str() { return "New"+_ts; } // Inline less-short name
-
-  static int def_idx(int fld) { return fld+1; } // Skip ctl in slot 0
-  Node fld(int fld) { return in(def_idx(fld)); } // Node for field#
 
   // Recompute default memory cache on a change.  Might not be monotonic,
   // e.g. during Node create, or folding a Store.
@@ -69,19 +71,23 @@ public abstract class NewNode<T extends TypeObj<T>> extends Node {
     return null;
   }
 
-  @Override public void add_flow_def_extra(Node chg) {
+  @Override public void add_work_def_extra(Work work, Node chg) {
     if( chg instanceof MrgProjNode && chg._live.at(_alias)==TypeObj.UNUSED )
       Env.GVN.add_reduce(chg);
   }
   // Reducing a NewNode to 'any' changes DEFMEM
-  @Override public void add_reduce_extra() {
-    Env.GVN.add_flow(Env.DEFMEM);
-  }
+  @Override public void add_reduce_extra() {  Env.GVN.add_flow(Env.DEFMEM);  }
 
   @Override public Type value(GVNGCM.Mode opt_mode) {
     return TypeTuple.make(Type.CTRL, is_unused() ? TypeObj.UNUSED : valueobj(),_tptr);   // Complex obj, simple ptr.
   }
   abstract TypeObj valueobj();
+
+  // Flow typing a NewNode to 'any' changes DEFMEM
+  @Override public void add_work_extra(Work work, Type oval) {
+    if( _val==Type.ANY || _live==TypeMem.DEAD || oval==TypeMem.DEAD )  work.add(Env.DEFMEM);
+  }
+
 
   @Override public TypeMem all_live() { return TypeMem.ALLMEM; }
 
@@ -92,8 +98,7 @@ public abstract class NewNode<T extends TypeObj<T>> extends Node {
   }
 
   //@Override public TV2 new_tvar(String alloc_site) { return TV2.make("Obj",this,alloc_site); }
-
-  //abstract public boolean unify( boolean test );
+  abstract public TV2 new_tvar(String alloc_site);
 
   @Override BitsAlias escapees() { return _tptr._aliases; }
   abstract T dead_type();
@@ -155,16 +160,6 @@ public abstract class NewNode<T extends TypeObj<T>> extends Node {
   // not done by default.
   // TODO: Allow CSE if all fields are final at construction.
   @Override public boolean equals(Object o) {  return this==o; }
-  public MrgProjNode mrg() {
-    Node ptr = _uses.at(0);
-    if( !(ptr instanceof MrgProjNode) ) ptr = _uses.at(1);
-    return (MrgProjNode)ptr;
-  }
-  ProjNode ptr() {
-    Node ptr = _uses.at(0);
-    if( ptr instanceof MrgProjNode ) ptr = _uses.at(1);
-    return (ProjNode)ptr;
-  }
 
   // --------------------------------------------------------------------------
   public static abstract class NewPrimNode<T extends TypeObj<T>> extends NewNode<T> {
@@ -172,13 +167,12 @@ public abstract class NewNode<T extends TypeObj<T>> extends Node {
     final TypeFunSig _sig;        // Arguments
     final boolean _reads;         // Reads old memory (all of these ops *make* new memory, none *write* old memory)
     final int _op_prec;
-    NewPrimNode(byte op, int parent_alias, T to, String name, boolean reads, int op_prec, Type... args) {
+    NewPrimNode(byte op, int parent_alias, T to, String name, boolean reads, int op_prec, TypeFld... args) {
       super(op,parent_alias,to);
       _name = name;
       _reads = reads;
-      assert (reads == (args[MEM_IDX]!=TypeMem.ALLMEM)); // If reading, then memory has some requirements
-      args[DSP_IDX] = Type.ALL; // No display
-      _sig = TypeFunSig.make(TypeTuple.RET,TypeTuple.make_args(args));
+      _sig = TypeFunSig.make(TypeStruct.make(args),TypeTuple.RET);
+      assert (reads == (_sig._formals.fld_find(" mem")._t!=TypeMem.ALLMEM)); // If reading, then memory has some requirements
       _op_prec = op_prec;
     }
     String bal_close() { return null; }
@@ -200,18 +194,21 @@ public abstract class NewNode<T extends TypeObj<T>> extends Node {
         assert in(0)==null && _uses._len==0;
         FunNode  fun = ( FunNode) X.xform(new  FunNode(this).add_def(Env.ALL_CTRL));
         ParmNode rpc = (ParmNode) X.xform(new ParmNode(0,"rpc",fun,Env.ALL_CALL,null));
-        Node memp= X.xform(new ParmNode(MEM_IDX,_sig._args[MEM_IDX],fun, TypeMem.MEM, Env.DEFMEM,null));
+        Node memp= X.xform(new ParmNode(MEM_IDX," mem",fun, TypeMem.MEM, Env.DEFMEM,null));
         fun._bal_close = bal_close();
 
         // Add input edges to the intrinsic
-        add_def(_reads ? memp : null); // Memory  for the primitive in slot MEM_IDX
-        add_def(null);                 // Closure for the primitive in slot DSP_IDX
-        for( int i=ARG_IDX; i<_sig.nargs(); i++ ) // Args follow
-          add_def( X.xform(new ParmNode(i,_sig._args[i],fun, (ConNode)Node.con(_sig.arg(i).simple_ptr()),null)));
+        if( _reads ) set_def(MEM_IDX, memp); // Memory is already null by default
+        while( len() < _sig.nargs() ) add_def(null);
+        for( TypeFld arg : _sig._formals.flds() ) {
+          if( arg._order==MEM_IDX ) continue; // Already handled MEM_IDX
+          set_def(arg._order,X.xform(new ParmNode(arg._order,arg._fld,fun, (ConNode)Node.con(arg._t.simple_ptr()),null)));
+        }
         NewNode nnn = (NewNode)X.xform(this);
         Node mem = Env.DEFMEM.make_mem_proj(nnn,memp);
         Node ptr = X.xform(new ProjNode(nnn,REZ_IDX));
         RetNode ret = (RetNode)X.xform(new RetNode(fun,mem,ptr,rpc,fun));
+        Env.SCP_0.add_def(ret);
         return (X._ret = new FunPtrNode(_name,ret));
       }
     }

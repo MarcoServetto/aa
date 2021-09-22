@@ -28,7 +28,7 @@ public class TypeTuple extends Type<TypeTuple> {
     int i,a,b,c;
     a = b = c = 0xdeadbeef + (_ts.length<<2) + hash;
     for( i=0; i+2<_ts.length; i+=3 ) {
-      a += _ts[i+0]._hash;
+      a += _ts[i  ]._hash;
       b += _ts[i+1]._hash;
       c += _ts[i+2]._hash;
       a -= c;  a ^= rot(c, 4);  c += b;
@@ -41,7 +41,7 @@ public class TypeTuple extends Type<TypeTuple> {
     switch(_ts.length-i) {
     case 3: c += _ts[i+2]._hash;
     case 2: b += _ts[i+1]._hash;
-    case 1: a += _ts[i+0]._hash;
+    case 1: a += _ts[i  ]._hash;
       c ^= b; c -= rot(b,14);
       a ^= c; a -= rot(c,11);
       b ^= a; b -= rot(a,25);
@@ -99,24 +99,19 @@ public class TypeTuple extends Type<TypeTuple> {
     Type[] ts2 = Types.get(ts.len()+DSP_IDX);
     ts2[CTL_IDX] = Type.CTRL;
     ts2[MEM_IDX] = TypeMem.ALLMEM;
-    for( int i=0; i<ts.len(); i++ )
-      ts2[DSP_IDX+i] = ts.at(i);
-    return make(ts2);
+    //for( int i=0; i<ts.len(); i++ )
+    //  ts2[DSP_IDX+i] = ts.at(i);
+    //return make(ts2);
+    throw unimpl();
   }
   public static TypeTuple make_args(Type[] ts) {
     assert ts[MEM_IDX] instanceof TypeMem && ts[DSP_IDX].is_display_ptr();
     return make(ts);
   }
-  public TypeTuple make_from_arg(int idx, Type arg ) {
-    Type[] ts = Types.clone(_ts);
-    ts[idx]=arg;
-    return make0(_any,ts);
-  }
 
   public static TypeTuple make_args(                       ) { return make(Type.CTRL,TypeMem.ALLMEM,Type.ALL ); }
   public static TypeTuple make_args(Type t2                ) { return make(Type.CTRL,TypeMem.ALLMEM,Type.ALL,t2); }
   public static TypeTuple make_args(Type t2,Type t3        ) { return make(Type.CTRL,TypeMem.ALLMEM,Type.ALL,t2,t3); }
-  public static TypeTuple make_args(Type t2,Type t3,Type t4) { return make(Type.CTRL,TypeMem.ALLMEM,Type.ALL,t2,t3,t4); }
   public static TypeTuple make_ret(Type trez) { return make(Type.CTRL,TypeMem.ANYMEM,trez); }
 
 
@@ -140,9 +135,6 @@ public class TypeTuple extends Type<TypeTuple> {
   public  static final TypeTuple FLT64_FLT64= make_args(TypeFlt.FLT64,TypeFlt.FLT64); // {flt flt->flt }
   public  static final TypeTuple OOP_OOP    = make_args(TypeMemPtr.ISUSED0,TypeMemPtr.ISUSED0);
   public  static final TypeTuple SCALAR1    = make_args(SCALAR);
-  public  static final TypeTuple LVAL_LEN   = make_args(TypeMemPtr.ARYPTR); // Array
-  public  static final TypeTuple LVAL_RD    = make_args(TypeMemPtr.ARYPTR,TypeInt.INT64); // Array & index
-  public  static final TypeTuple LVAL_WR    = make_args(TypeMemPtr.ARYPTR,TypeInt.INT64,Type.SCALAR); // Array & index & element
 
   //
   static final TypeTuple[] TYPES = new TypeTuple[]{

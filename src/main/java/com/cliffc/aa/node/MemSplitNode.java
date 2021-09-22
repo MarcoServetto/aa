@@ -1,5 +1,6 @@
 package com.cliffc.aa.node;
 
+import com.cliffc.aa.AA;
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
 import com.cliffc.aa.type.*;
@@ -57,17 +58,7 @@ public class MemSplitNode extends Node {
     if( join!=null ) Env.GVN.add_flow(join);
   }
 
-  @Override public boolean unify( boolean test ) {
-    TV2 tself = tvar();
-    if( tself.isa("SplitMem") ) {
-      assert tself._args.size()==_escs._len; // If changing the split-arity, need to reset_tvar
-      return false;
-    }
-    if( test ) return true;
-    Node[] parms = new Node[_escs._len];
-    Arrays.fill(parms,mem());
-    return tvar().unify(TV2.make("SplitMem",this,"unify",parms),test);
-  }
+  @Override public TV2 new_tvar(String alloc_site) { return null; }
 
   // Find index for alias
   int find_alias_index( int alias ) {
@@ -75,7 +66,7 @@ public class MemSplitNode extends Node {
     for( int i=1; i<_escs._len; i++ )
       if( _escs.at(i).test(alias) )
         return i;
-    throw com.cliffc.aa.AA.unimpl(); // Should be found
+    throw AA.unimpl(); // Should be found
   }
 
   // Find the escape set this esc set belongs to, or make a new one.
@@ -140,6 +131,7 @@ public class MemSplitNode extends Node {
   // New/Mrg pairs are just the Mrg; the New is not part of the SESE region.
   // Call/CallEpi pairs are: MProj->{CallEpi}->Call.
   static Node insert_split(Node tail1, BitsAlias head1_escs, Node head1, Node tail2, Node head2) {
+    assert Env.START.more_flow(Env.GVN._work_flow,true)==0;
     assert tail1.is_mem() && head1.is_mem() && tail2.is_mem() && head2.is_mem();
     BitsAlias head2_escs = head2.escapees();
     assert check_split(head1,head1_escs);
@@ -155,7 +147,7 @@ public class MemSplitNode extends Node {
     if( mprj.is_dead() ) Env.GVN.revalive(msp);
     else Env.GVN.revalive(msp,mprj,mjn);
     if( tail1 instanceof ProjNode ) Env.GVN.add_flow(tail1.in(0));
-    assert Env.START.more_flow(true)==0;
+    assert Env.START.more_flow(Env.GVN._work_flow,true)==0;
     Env.GVN.add_mono(mjn);       // See if other defs can move into the Join
     for( Node use : mjn.unkeep(2)._uses )
       Env.GVN.add_work_all(use); // See if other uses can move into the Join
@@ -164,6 +156,7 @@ public class MemSplitNode extends Node {
 
   static boolean check_split( Node head1, BitsAlias head1_escs ) { return check_split(head1,head1_escs,head1.in(1)); }
   static boolean check_split( Node head1, BitsAlias head1_escs, Node tail2 ) {
+    if( head1._keep > 1 || tail2._keep > 1 ) return false;
     // Must have only 1 mem-writer (this can fail if used by different control paths)
     if( !tail2.check_solo_mem_writer(head1) ) return false;
     // No alias overlaps

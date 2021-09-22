@@ -10,6 +10,7 @@ import java.util.HashSet;
 import static com.cliffc.aa.type.TypeFld.Access;
 
 public class Env implements AutoCloseable {
+  public static Env FILE;
   public final static GVNGCM GVN = new GVNGCM(); // Initial GVN
   public static    StartNode START; // Program start values (control, empty memory, cmd-line args)
   public static    CProjNode CTL_0; // Program start value control
@@ -19,8 +20,6 @@ public class Env implements AutoCloseable {
   public static   DefMemNode DEFMEM;// Default memory (all structure types)
   public static      ConNode ALL_CTRL; // Default control
   public static      ConNode XCTRL; // Always dead control
-  public static      ConNode XNIL;  // Common XNIL
-  public static      ConNode NIL;   // Common NIL
   public static      ConNode ANY;   // Common ANY / used for dead
   public static      ConNode ALL;   // Common ALL / used for errors
   public static      ConNode ALL_CALL; // Common during function call construction
@@ -40,7 +39,7 @@ public class Env implements AutoCloseable {
   private Env(  ) {
     _par = null;
     _nongen = null;
-    _scope = init(CTL_0,XNIL,MEM_0,Type.XNIL,null,true);
+    _scope = init(CTL_0,Node.con(Type.XNIL),MEM_0,Type.XNIL,null,true);
   }
 
   // A file-level Env, or below.  Contains user written code.
@@ -79,8 +78,6 @@ public class Env implements AutoCloseable {
     START   = GVN.init (new StartNode());
     ALL_CTRL= GVN.xform(new ConNode<>(Type.CTRL )).keep();
     XCTRL   = GVN.xform(new ConNode<>(Type.XCTRL)).keep();
-    XNIL    = GVN.xform(new ConNode<>(Type.XNIL )).keep();
-    NIL     = GVN.xform(new ConNode<>(Type.NIL  )).keep();
     ANY     = GVN.xform(new ConNode<>(Type.ANY  )).keep();
     ALL     = GVN.xform(new ConNode<>(Type.ALL  )).keep();
     ALL_CALL= GVN.xform(new ConNode<>(TypeRPC.ALL_CALL)).keep();
@@ -114,7 +111,7 @@ public class Env implements AutoCloseable {
   // A new Env for the current Parse scope (generally a file-scope or a
   // test-scope), above this is the basic public Env with all the primitives
   public static Env file_scope(Env top_scope) {
-    return new Env(top_scope,null, true, top_scope._scope.ctrl(), top_scope._scope.mem());
+    return (FILE = new Env(top_scope,null, true, top_scope._scope.ctrl(), top_scope._scope.mem()));
   }
 
   // Wire up an early function exit
@@ -146,7 +143,6 @@ public class Env implements AutoCloseable {
     close_display(GVN);
     GVN.add_dead(_scope);
     GVN.iter(GVN._opt_mode);
-    assert _scope.is_dead();
   }
 
   // Record global static state for reset
@@ -281,22 +277,22 @@ public class Env implements AutoCloseable {
     @Override public String toString() {
       // These types get large & complex; find all the dups up-front to allow
       // for prettier printing.  Uses '$A' style for repeats.
-      NonBlockingHashMapLong<String> dups = new NonBlockingHashMapLong<>();
-      VBitSet bs = new VBitSet();
+      VBitSet dups  = new VBitSet();
+      VBitSet visit = new VBitSet();
       for( VStack vs = this; vs!=null ; vs=vs._par )
         if( vs._tvars != null )
           for( TV2 tv2 : vs._tvars )
-            if( tv2 != null ) tv2.find_dups(bs,dups,0);
+            if( tv2 != null ) tv2._get_dups(visit,dups);
 
       // Print stack of types, grouped by depth
-      bs.clr();
+      visit.clr();
       SB sb = new SB().p("[");
       for( VStack vs = this; vs!=null ; vs=vs._par ) {
         if( vs._tvars != null ) {
           for( int i=0; i<vs._tvars._len; i++ ) {
             sb.p(vs._flds.at(i)).p('=');
             TV2 tv2 = vs._tvars.at(i);
-            if( tv2 !=null ) tv2.str(sb,bs,dups,false,0,0);
+            if( tv2 !=null ) tv2.str(sb,visit,dups,true);
             sb.p(", ");
           }
           if( vs._tvars._len>0 ) sb.unchar(2);

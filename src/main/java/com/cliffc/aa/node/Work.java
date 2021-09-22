@@ -2,6 +2,7 @@ package com.cliffc.aa.node;
 
 import com.cliffc.aa.util.Ary;
 import com.cliffc.aa.util.VBitSet;
+import com.cliffc.aa.tvar.UQNodes;
 
 import java.util.function.Function;
 
@@ -13,9 +14,10 @@ public abstract class Work implements Function<Node,Node> {
   public Work(String name, boolean replacing) { _name=name; _replacing = replacing; }
   public int len() { return _work._len; }
   public <N extends Node> N add(N n) {
-    if( !_on.tset(n._uid) ) _work.push(n);
+    if( n!=null && !_on.tset(n._uid) ) _work.push(n);
     return n;
   }
+  public void add(UQNodes uq) {  if( uq!=null ) for( Node n : uq.values() )  add(n); }
   public abstract Node apply(Node n);
 
   public Node pop() {

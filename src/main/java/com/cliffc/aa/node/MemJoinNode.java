@@ -7,6 +7,7 @@ import com.cliffc.aa.type.*;
 import com.cliffc.aa.util.Ary;
 
 import static com.cliffc.aa.AA.MEM_IDX;
+import static com.cliffc.aa.AA.unimpl;
 import static com.cliffc.aa.Env.GVN;
 
 // Join a split set of aliases from a SESE region, split by an earlier MemSplit.
@@ -43,7 +44,7 @@ public class MemJoinNode extends Node {
 
     return null;
   }
-  @Override public void add_flow_def_extra(Node chg) {
+  @Override public void add_work_def_extra(Work work, Node chg) {
     if( _uses._len==1 ) {
       Node u = _uses.at(0);
       if( u instanceof StoreNode ||
@@ -165,21 +166,7 @@ public class MemJoinNode extends Node {
     return super.live(opt_mode);
   }
 
-  // Unify alias-by-alias, except on the alias sets
-  @Override public boolean unify( boolean test ) {
-    MemSplitNode msp = msp();
-    if( msp==null ) return false;
-    TV2 tmem = tvar(0);
-    boolean progress = tvar().unify(tmem,test);
-    if( progress && test ) return true;
-    Ary<BitsAlias> escs = msp()._escs;
-    for( int i=1; i<_defs._len; i++ ) {
-      if( !tvar(i).isa("Mem") ) continue; // TODO: Unify anyways, forces faster progress
-      progress |= tmem.unify_alias(escs.at(i),tvar(i),test);
-      if( progress && test ) return true;
-    }
-    return progress;
-  }
+  @Override public TV2 new_tvar(String alloc_site) { return null; }
 
   // Move the given SESE region just ahead of the split into the join/split
   // area.  The head node has the escape-set.
@@ -222,7 +209,6 @@ public class MemJoinNode extends Node {
     Node mspj;
     if( idx == _defs._len ) {         // Escape set added at the end
       add_def(mspj = GVN.init(new MProjNode(msp,idx)).unkeep(2));
-      mspj._tvar = msp.mem().tvar(); // Need to upgrade tvar to a TMem
     } else {             // Inserted into prior region
       mspj = in(idx);
       assert idx!=0;     // No partial overlap; all escape sets are independent
@@ -243,7 +229,7 @@ public class MemJoinNode extends Node {
     old.unkeep();               // Alive, but keep==0
     nnn.xval();  xval();        // Force update, since not locally monotonic
     GVN.add_flow_defs(this);
-    assert Env.START.more_flow(true)==0;
+    assert Env.START.more_flow(Env.GVN._work_flow,true)==0;
     return this;
   }
 

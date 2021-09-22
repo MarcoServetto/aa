@@ -26,8 +26,8 @@ import static com.cliffc.aa.type.TypeFld.Access;
  *  expr = term [binop term]*      // gather all the binops and sort by precedence
  *  term = uniop term              // Any number of prefix uniops
  *  term = id++ | id--             //   then postfix update ops
- *  term = tfact bopen stmts bclose      // if bopen/bclose is arity-2 e.g. ary[idx]
- *  term = tfact bopen stmts bclose stmt // if bopen/bclose is arity-3 e.g. ary[idx]=val
+ *  term = tfact bop+ stmts bop-      // Balanced/split operator arity-2, e.g. array lookup, ary [ idx ]
+ *  term = tfact bop+ stmts bop- stmt // Balanced/split operator arity-2, e.g. array assign, ary [ idx ]:= val
  *  term = tfact post              //   A term is a tfact and some more stuff...
  *  post = empty                   // A term can be just a plain 'tfact'
  *  post = (tuple) post            // Application argument list
@@ -39,8 +39,8 @@ import static com.cliffc.aa.type.TypeFld.Access;
  *  fact = id                      // variable lookup
  *  fact = num                     // number
  *  fact = "string"                // string
- *  fact = [stmts]                 // array decl with size
- *  fact = [stmts,[stmts,]*]       // array decl with tuple
+ *  fact = bop+ stmts bop-         // Balanced/split operator, arity-1, e.g. array decl with size: [ 17 ]
+ *  fact = bop+ [stmts,[stmts,]*] bop-  // Balanced/split operator, arity-N, e.g. array decl with elements: [ "Cliff", "John", "Lisa" ]
  *  fact = (stmts)                 // General statements parsed recursively
  *  fact = (tuple)                 // Tuple builder
  *  fact = func                    // Anonymous function declaration
@@ -49,7 +49,9 @@ import static com.cliffc.aa.type.TypeFld.Access;
  *  fact = {uniop}                 // Special syntactic form of uniop; no spaces allowed; returns function constant
  *  tuple= (stmts,[stmts,])        // Tuple; final comma is optional, first comma is required
  *  binop= +-*%&|/<>!= [ ]=        // etc; primitive lookup; can determine infix binop at parse-time
- *  uniop= -!~# a                   // etc; primitive lookup; can determine infix uniop at parse-time
+ *  uniop= -!~# a                  // etc; primitive lookup; can determine infix uniop at parse-time
+ *  bop+ = [                       // Balanced/split operator open
+ *  bop- = ] ]= ]:=                // Balanced/split operator close
  *  func = { [id[:type]* ->]? stmts} // Anonymous function declaration, if no args then the -> is optional
  *                                 // Pattern matching: 1 arg is the arg; 2+ args break down a (required) tuple
  *  str  = [.\%]*                  // String contents; \t\n\r\% standard escapes
@@ -61,7 +63,7 @@ import static com.cliffc.aa.type.TypeFld.Access;
                                    // the count of commas dictates the length, zero commas is zero length.
                                    // Tuples are always final.
  *  tmod = := | = | ==             // ':=' or '' is r/w, '=' is final, '==' is r/o
- *  tstruct = @{ [id [tmod [type?]],]*}  // Struct types are field names with optional types.  Spaces not allowed
+ *  tstruct = @{ [id [tmod [type?]];]*}  // Struct types are field names with optional types.
  *  tvar = id                      // Type variable lookup
  */
 
@@ -105,36 +107,17 @@ public class Parse implements Comparable<Parse> {
     prog();                     // Parse a program
     // Delete names at the top scope before starting optimization.
     _e._scope.keep();
-    _e.close_display(_gvn);
+    _e.close_display(_gvn);          // No more fields added to the top parse scope
+    Env.GVN.add_flow_uses(_e._scope);// Post-parse, revisit top-level called functions
     _gvn.iter(GVNGCM.Mode.PesiNoCG); // Pessimistic optimizations; might improve error situation
-    remove_unknown_callers();
-    _gvn.gcp (GVNGCM.Mode.Opto,scope()); // Global Constant Propagation
-    _gvn.iter(GVNGCM.Mode.PesiCG); // Re-check all ideal calls now that types have been maximally lifted
-    _gvn.gcp (GVNGCM.Mode.Opto,scope()); // Global Constant Propagation
-    _gvn.iter(GVNGCM.Mode.PesiCG); // Re-check all ideal calls now that types have been maximally lifted
+    Env.DEFMEM.unkeep(2);            // Memory not forced alive
+    Combo.opto();                    // Global Constant Propagation and Hindley-Milner Typing
+    _gvn.iter(GVNGCM.Mode.PesiCG);   // Re-check all ideal calls now that types have been maximally lifted
+    Combo.opto();                    // Global Constant Propagation and Hindley-Milner Typing
+    _gvn.iter(GVNGCM.Mode.PesiCG);   // Re-check all ideal calls now that types have been maximally lifted
     _e._scope.unkeep();
     //assert Type.intern_check();
     return gather_errors();
-  }
-
-  private void remove_unknown_callers() {
-    Ary<Node> uses = Env.ALL_CTRL._uses;
-    // For all unknown uses of functions, they will all be known after GCP.
-    // Remove the hyper-conservative ALL_CTRL edge.  Note that I canNOT run the
-    // pessimistic iter() at this point, as GCP needs to discover all the
-    // actual call-graph edges and install them directly on the FunNodes.
-    for( int i=0; i<uses._len; i++ ) {
-      Node use = uses.at(i);
-      if( !use.is_prim() ) {
-        assert use instanceof FunNode;
-        assert use.in(1)==Env.ALL_CTRL;
-        use.set_def(1,Env.XCTRL);
-        i--;
-      }
-    }
-    // No longer force all memory alive
-    Env.DEFMEM.unkeep();
-    Env.DEFMEM.insert(Env.ANY);
   }
 
   private TypeEnv gather_errors() {
@@ -147,9 +130,13 @@ public class Parse implements Comparable<Parse> {
     ArrayList<Node.ErrMsg> errs0 = new ArrayList<>(errs);
     Collections.sort(errs0);
 
-    Type res = scope().rez()._val; // New and improved result
+    Node rez = scope().rez();
     Type mem = scope().mem()._val;
-    return new TypeEnv(res, mem instanceof TypeMem ? (TypeMem)mem : mem.oob(TypeMem.ALLMEM),_e,errs0.isEmpty() ? null : errs0);
+    return new TypeEnv(rez._val,
+                       mem instanceof TypeMem ? (TypeMem)mem : mem.oob(TypeMem.ALLMEM),
+                       rez.tvar(),
+                       _e,
+                       errs0.isEmpty() ? null : errs0);
   }
 
   /** Parse a top-level:
@@ -268,7 +255,7 @@ public class Parse implements Comparable<Parse> {
   private Node stmt(boolean lookup_current_scope_only) {
     if( peek('^') ) {           // Early function exit
       Node ifex = ifex();
-      if( ifex==null ) ifex=Env.XNIL;
+      if( ifex==null ) ifex=con(Type.XNIL);
       if( _e._par._par==null )
         return err_ctrl1(Node.ErrMsg.syntax(this,"Function exit but outside any function"));
       return _e.early_exit(this,ifex);
@@ -326,7 +313,7 @@ public class Parse implements Comparable<Parse> {
     }
 
     // Normal statement value parse
-    Node ifex = default_nil ? Env.XNIL : ifex(); // Parse an expression for the statement value
+    Node ifex = default_nil ? con(Type.XNIL) : ifex(); // Parse an expression for the statement value
     // Check for no-statement after start of assignment, e.g. "x = ;"
     if( ifex == null ) {        // No statement?
       if( toks._len == 0 ) return _e.nongen_pop(null);
@@ -347,7 +334,7 @@ public class Parse implements Comparable<Parse> {
       if( scope==null ) {                    // Token not already bound at any scope
         if( ifex instanceof FunPtrNode && !ifex.is_forward_ref() )
           ((FunPtrNode)ifex).bind(tok); // Debug only: give name to function
-        create(tok,Env.XNIL,Access.RW);  // Create at top of scope as undefined
+        create(tok,con(Type.XNIL),Access.RW);  // Create at top of scope as undefined
         scope = scope();                // Scope is the current one
         scope.def_if(tok,mutable,true); // Record if inside arm of if (partial def error check)
       }
@@ -397,7 +384,7 @@ public class Parse implements Comparable<Parse> {
     set_ctrl(gvn(new CProjNode(ifex,0))); // Control for false branch
     Env.GVN.add_reduce(ifex);
     set_mem(old_mem.unkeep(2));    // Reset memory to before the IF
-    Node fex = peek(':') ? stmt(false) : Env.XNIL;
+    Node fex = peek(':') ? stmt(false) : con(Type.XNIL);
     if( fex == null ) fex = err_ctrl2("missing expr after ':'");
     fex.keep(2);                   // Keep until merge point
     Node f_ctrl= ctrl().keep(2);   // Keep until merge point
@@ -553,7 +540,8 @@ public class Parse implements Comparable<Parse> {
     if( stk._ts != old_ts ) {
       lhs.keep(2);
       for( int i=old_defs._len; i<stk._defs._len; i++ ) {
-        String fname = stk._ts.fld(i-1)._fld;
+        // TODO: alignment between old_defs and struct fields
+        String fname = stk._ts.fld_idx(i)._fld;
         String msg = "'"+fname+"' not defined prior to the short-circuit";
         Parse bad = errMsg(rhsx);
         Node err = gvn(new ErrNode(ctrl(),bad,msg));
@@ -716,7 +704,7 @@ public class Parse implements Comparable<Parse> {
     // Need a load/call/store sensible options
     Node n;
     if( scope==null ) {         // Token not already bound to a value
-      create(tok,Env.XNIL,Access.RW);
+      create(tok,con(Type.XNIL),Access.RW);
       scope = scope();
     } else {                    // Check existing token for mutable
       if( !scope.is_mutable(tok) )
@@ -880,6 +868,7 @@ public class Parse implements Comparable<Parse> {
       stmts(true);              // Create local vars-as-fields
       require('}',oldx);        // Matched closing }
       assert ctrl() != e._scope;
+      e._scope.stk().update("^",Access.Final,Env.ANY);
       ptr = e._scope.ptr().keep();    // A pointer to the constructed object
       e._par._scope.set_ctrl(ctrl()); // Carry any control changes back to outer scope
       e._par._scope.set_mem (mem ()); // Carry any memory  changes back to outer scope
@@ -896,9 +885,6 @@ public class Parse implements Comparable<Parse> {
   private static final Access args_are_mutable=Access.Final; // Args mutable or r/only by default
   private Node func() {
     int oldx = _x;              // Past opening '{'
-    Ary<String> ids = new Ary<>(new String[1],0);
-    Ary<Type  > ts  = new Ary<>(new Type  [1],0);
-    Ary<Parse > bads= new Ary<>(new Parse [1],0);
 
     // Push an extra hidden display argument.  Similar to java inner-class ptr
     // or when inside of a struct definition: 'this'.
@@ -906,15 +892,12 @@ public class Parse implements Comparable<Parse> {
     TypeMemPtr tpar_disp = (TypeMemPtr) parent_display._val; // Just a TMP of the right alias
     Node fresh_disp = gvn(new FreshNode(_e._nongen,ctrl(),parent_display)).keep();
 
-    ids .push(" ctl");
-    ts  .push(Type.CTRL);
-    bads.push(null);
-    ids .push(" mem");
-    ts  .push(TypeMem.MEM);
-    bads.push(null);
-    ids .push("^");
-    ts  .push(tpar_disp);
-    bads.push(null);
+    // Incrementally build up the formals
+    TypeStruct formals = TypeStruct.make("",false,true,
+                                         TypeFld.make(" mem",TypeMem.MEM,MEM_IDX),
+                                         TypeFld.make("^",tpar_disp,DSP_IDX));
+    TypeStruct no_args_formals = formals;
+    Ary<Parse> bads= new Ary<>(new Parse[1],0);
 
     // Parse arguments
     while( true ) {
@@ -928,7 +911,7 @@ public class Parse implements Comparable<Parse> {
           (t=type())==null ) { // Get type
         // If no type, might be "{ x := ...}" or "{ fun arg := ...}" which can
         // be valid stmts, hence this may be a no-arg function.
-        if( ids._len-1 <= 2 ) { _x=oldx; break; }
+        if( bads._len-1 <= 2 ) { _x=oldx; break; }
         else {
           // Might be: "{ x y z:bad -> body }" which cannot be any stmt.  This
           // is an error in any case.  Treat as a bad type on a valid function.
@@ -937,21 +920,20 @@ public class Parse implements Comparable<Parse> {
           skipNonWS();         // Skip possible type sig, looking for next arg
         }
       }
-      ids .add(tok);   // Accumulate args
-      ts  .add(t  );
+      formals = formals.add_fld(tok,Access.Final,t,ARG_IDX+bads._len); // Accumulate args
       bads.add(bad);
     }
     // If this is a no-arg function, we may have parsed 1 or 2 tokens as-if
     // args, and then reset.  Also reset to just the mem & display args.
-    if( _x == oldx ) { ids.set_len(ARG_IDX); ts.set_len(ARG_IDX); bads.set_len(ARG_IDX);  }
+    if( _x == oldx ) { formals = no_args_formals;  bads.set_len(ARG_IDX); }
 
     try( GVNGCM.Build<Node> X = _gvn.new Build<>()) { // Nest an environment for the local vars
       // Build the FunNode header
-      FunNode fun = (FunNode)X.xform(new FunNode(ids.asAry(),ts.asAry()).add_def(Env.ALL_CTRL));
+      FunNode fun = (FunNode)X.xform(new FunNode(formals.close()).add_def(gvn(new CEProjNode(Env.FILE._scope))));
       // Record H-M VStack in case we clone
       fun.set_nongens(_e._nongen.compact());
       // Build Parms for system incoming values
-      Node rpc = X.xform(new ParmNode(0      ,"rpc" ,fun,con(TypeRPC.ALL_CALL),null));
+      Node rpc = X.xform(new ParmNode(CTL_IDX," rpc",fun,con(TypeRPC.ALL_CALL),null));
       Node mem = X.xform(new ParmNode(MEM_IDX," mem",fun,TypeMem.MEM,Env.DEFMEM,null));
       Node clo = X.xform(new ParmNode(DSP_IDX,"^"   ,fun,con(tpar_disp),null));
 
@@ -962,16 +944,15 @@ public class Parse implements Comparable<Parse> {
         // But here, in a function, the display is actually passed in as a hidden
         // extra argument and replaces the default.
         NewObjNode stk = e._scope.stk();
-        stk.update(0,Access.Final,clo);
-        // Add a nongen memory arg
-        _e._nongen.add_var(" mem",mem.tvar());
+        stk.update("^",Access.Final,clo);
 
         // Parms for all arguments
         Parse errmsg = errMsg();  // Lazy error message
-        for( int i=ARG_IDX; i<ids._len; i++ ) { // User parms start
-          Node parm = X.xform(new ParmNode(i,ids.at(i),fun,con(Type.SCALAR),errmsg));
-          _e._nongen.add_var(ids.at(i),parm.tvar());
-          create(ids.at(i),parm, args_are_mutable);
+        for( TypeFld fld : formals.flds() ) { // User parms start
+          if( fld._order <= DSP_IDX ) continue;// Already handled
+          Node parm = X.xform(new ParmNode(fld,fun,con(fld._t.simple_ptr()),errmsg));
+          _e._nongen.add_var(fld._fld,parm.tvar());
+          create(fld._fld,parm, args_are_mutable);
         }
 
         // Parse function body
@@ -984,6 +965,7 @@ public class Parse implements Comparable<Parse> {
         // Standard return; function control, memory, result, RPC.  Plus a hook
         // to the function for faster access.
         RetNode ret = (RetNode)X.xform(new RetNode(ctrl(),mem(),rez,rpc,fun));
+        Env.FILE._scope.add_def(ret);
         // The FunPtr builds a real display; any up-scope references are passed in now.
         Node fptr = X.xform(new FunPtrNode(null,ret,fresh_disp.unhook()));
 
@@ -1030,7 +1012,7 @@ public class Parse implements Comparable<Parse> {
     val .add_def(rez   );
     set_ctrl(Env.XCTRL);
     set_mem (con(TypeMem.XMEM));
-    return Env.XNIL;
+    return con(Type.XNIL);
   }
 
   /** A balanced operator as a fact().  Any balancing token can be used.
@@ -1142,7 +1124,7 @@ public class Parse implements Comparable<Parse> {
    *  tary = '[' type? ']'                 // Cannot specify type for array size
    *  tfun = {[[type]* ->]? type }         // Function types mirror func decls
    *  tmod = = | := | ==                   // '=' is r/final, ':=' is r/w, '==' is read-only
-   *  tstruct = @{ [id [tmod [type?]];]*}  // Struct types are field names with optional types.  Spaces not allowed
+   *  tstruct = @{ [id [tmod [type?]];]*}  // Struct types are field names with optional types.
    *  ttuple = ([type?] [,[type?]]*)       // List of types, trailing comma optional
    *  tvar = A previously declared type variable
    *
@@ -1184,20 +1166,23 @@ public class Parse implements Comparable<Parse> {
   // Type or null or Type.ANY for '->' token
   private Type type0(boolean type_var) {
     if( peek('{') ) {           // Function type
-      Ary<Type> ts = new Ary<>(new Type[]{Type.CTRL,TypeMem.ALLMEM,TypeMemPtr.DISP_SIMPLE});  Type t;
+      TypeStruct formals = TypeStruct.make("",false,true,
+                                           TypeFld.make_tup(TypeMem.ALLMEM,MEM_IDX),
+                                           TypeFld.make_tup(TypeMemPtr.DISP_SIMPLE,DSP_IDX));
+      TypeStruct no_args_formals = formals;  Type t; // Collect arg types
       while( (t=typep(type_var)) != null && t != Type.ANY  )
-        ts.add(t);              // Collect arg types
+        formals = formals.add_tup(t,formals.len()-2+ARG_IDX);
       Type ret;
       if( t==Type.ANY ) {       // Found ->, expect return type
         ret = typep(type_var);
         if( ret == null ) return null; // should return TypeErr missing type after ->
       } else {                  // Allow no-args and simple return type
-        if( ts._len != ARG_IDX+1 ) return null; // should return TypeErr missing -> in tfun
-        ret = ts.pop();         // e.g. { int } Get single return type
+        if( formals.len()-2 != 1 ) return null; // should return TypeErr missing -> in tfun
+        ret = formals.fld_idx(ARG_IDX); // e.g. { int } Get single return type
+        formals = no_args_formals;
       }
-      TypeTuple targs = TypeTuple.make_args(ts.asAry());
       if( !peek('}') ) return null;
-      return typeq(TypeFunSig.make(TypeTuple.make_ret(ret),targs));
+      return typeq(TypeFunSig.make(formals,TypeTuple.make_ret(ret)));
     }
 
     if( peek("@{") ) {          // Struct type
@@ -1212,10 +1197,10 @@ public class Parse implements Comparable<Parse> {
             (t=typep(type_var)) == null) // Parse type, wrap ptrs
           t = Type.SCALAR;               // No type found, assume default
         if( flds.find(fld -> Util.eq(fld._fld,itok) ) != -1 ) throw unimpl(); // cannot use same field name twice
-        flds.add(TypeFld.make(itok,t,tmodf,flds._len));
+        flds.add(TypeFld.make(itok,t,tmodf,flds._len-1+ARG_IDX));
         if( !peek(';') ) break; // Final semi-colon is optional
       }
-      return peek('}') ? TypeStruct.make("",false,flds.asAry(),true) : null;
+      return peek('}') ? TypeStruct.make("",false,true,flds) : null;
     }
 
     // "()" is the zero-entry tuple
@@ -1232,10 +1217,10 @@ public class Parse implements Comparable<Parse> {
         if( c!=',' &&            // Has type annotation?
             (t=typep(type_var)) == null) // Parse type, wrap ptrs
           return null;                   // not a type
-        flds.add(TypeFld.make_tup(t,flds._len));
+        flds.add(TypeFld.make_tup(t,ARG_IDX+flds._len-1));
         if( !peek(',') ) break; // Final comma is optional
       }
-      return peek(')') ? TypeStruct.make("",false,flds.asAry(),true) : null;
+      return peek(')') ? TypeStruct.make("",false,true,flds) : null;
     }
 
     if( peek('[') ) {

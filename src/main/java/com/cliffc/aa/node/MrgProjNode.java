@@ -2,6 +2,7 @@ package com.cliffc.aa.node;
 
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
+import com.cliffc.aa.tvar.TV2;
 import com.cliffc.aa.type.*;
 
 import static com.cliffc.aa.AA.MEM_IDX;
@@ -17,7 +18,7 @@ public class MrgProjNode extends ProjNode {
 
   @Override public Node ideal_reduce() {
     if( _keep >= 2 ) return null;
-    if( val(0).above_center() )
+    if( !is_prim() && val(0).above_center() )
       return mem();
     NewNode nnn = nnn();
     Node mem = mem();
@@ -56,7 +57,7 @@ public class MrgProjNode extends ProjNode {
     }
     return null;
   }
-  @Override public void add_flow_def_extra(Node chg) {
+  @Override public void add_work_def_extra(Work work, Node chg) {
     for( Node use : _uses ) {          // Lost a use, could be a 2nd mem writer
       if( use instanceof MrgProjNode ) // Look for back-to-back MrgProj
         Env.GVN.add_grow(use);
@@ -93,15 +94,5 @@ public class MrgProjNode extends ProjNode {
     return _live;
   }
 
-  //@Override public TV2 new_tvar( String alloc_site) { return TV2.make_mem(this,alloc_site); }
-  //
-  //@Override public boolean unify( boolean test ) {
-  //  if( !(in(0) instanceof NewNode) ) return false;
-  //  TV2 tmem = mem().tvar();
-  //  if( !tmem.isa("Mem") ) return false;
-  //  TV2 tself = tvar();
-  //  return tself.unify(tmem,test) |                  // Unify bulk memory
-  //    tmem.unify_at(nnn()._alias,nnn().tvar(),test); // Unify at the alias
-  //}
-
+  @Override public TV2 new_tvar( String alloc_site) { return null; }
 }

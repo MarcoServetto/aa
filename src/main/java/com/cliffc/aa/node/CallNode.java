@@ -3,6 +3,7 @@ package com.cliffc.aa.node;
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
 import com.cliffc.aa.Parse;
+import com.cliffc.aa.tvar.TV2;
 import com.cliffc.aa.type.*;
 import com.cliffc.aa.util.Ary;
 import org.jetbrains.annotations.NotNull;
@@ -101,7 +102,7 @@ public class CallNode extends Node {
     _badargs = badargs;
   }
 
-  @Override public String xstr() { return  _is_copy ? "CopyCall" : (is_dead() ? "Xall" : "Call"); } // Self short name
+  @Override public String xstr() { return (_is_copy ? "CopyCall" : (is_dead() ? "Xall" : "Call"))+(_not_resolved_by_gcp?"_UNRESOLVED":""); } // Self short name
   String  str() { return xstr(); }       // Inline short name
   @Override public boolean is_mem() {    // Some calls are known to not write memory
     CallEpiNode cepi = cepi();
@@ -208,10 +209,9 @@ public class CallNode extends Node {
         if( mem instanceof MrgProjNode && mem.in(0)==arg.in(0) ) {
           NewNode nnn = (NewNode)arg.in(0);
           Node fdx = pop();
-          remove(_defs._len-1); // Pop off the NewNode tuple
-          int len = nnn._defs._len;
-          for( int i=1; NewNode.def_idx(i)<len; i++ ) // Push the args; unpacks the tuple
-            add_def( nnn.fld(i));
+          pop(); // Pop off the NewNode tuple
+          for( int i=ARG_IDX; i<nnn._defs._len; i++ ) // Push the args; unpacks the tuple
+            add_def( nnn.in(i));
           add_def(fdx);          // FIDX is last
           _unpacked = true;      // Only do it once
           keep().xval();         // Recompute value, this is not monotonic since replacing tuple with args
@@ -285,7 +285,7 @@ public class CallNode extends Node {
           set_dsp(fptr.display());
         set_fdx(fptr);          // Resolve to 1 choice
         xval();                 // Force value update; least-cost LOWERS types (by removing a choice)
-        add_flow_use_extra(fptr);
+        add_work_use_extra(Env.GVN._work_flow,fptr);
         if( cepi!=null ) Env.GVN.add_reduce(cepi); // Might unwire
         return this;
       }
@@ -307,7 +307,7 @@ public class CallNode extends Node {
 
 
     // Wire valid targets.
-    if( cepi!=null && cepi.check_and_wire() )
+    if( cepi!=null && cepi.check_and_wire(Env.GVN._work_flow) )
       return this;              // Some wiring happened
 
     // Check for dead args and trim; must be after all wiring is done because
@@ -454,7 +454,7 @@ public class CallNode extends Node {
       tfx = tfx.oob(TypeFunPtr.GENERIC_FUNPTR);
     TypeFunPtr tfp = (TypeFunPtr)tfx;
     BitsFun fidxs = tfp.fidxs();
-    if( _not_resolved_by_gcp && // If overloads not resolvable, then take them all and we are in-error
+    if( _not_resolved_by_gcp && // If overloads not resolvable, then take them all, and we are in-error
         fidxs.above_center() && tfp!=TypeFunPtr.GENERIC_FUNPTR.dual() )
       tfp = tfp.make_from(fidxs.dual()); // Force FIDXS low (take all), and we are in-error
 
@@ -478,38 +478,44 @@ public class CallNode extends Node {
     BitsAlias esc_out2 = precall.and_unused(esc_out); // Filter by unused pre-call
     return esc_out2.meet(esc_in);
   }
-  @Override public void add_flow_extra(Type old) {
+  @Override public void add_work_extra(Work work, Type old) {
     if( old==Type.ANY || _val==Type.ANY ||
         (old instanceof TypeTuple && ttfp(old).above_center()) )
-      Env.GVN.add_flow_defs(this); // Args can be more-alive or more-dead
+      add_work_defs(work);      // Args can be more-alive or more-dead
     // If Call flips to being in-error, all incoming args forced live/escape
     for( Node def : _defs )
       if( def!=null && def._live!=TypeMem.ESCAPE && err(true)!=null )
-        Env.GVN.add_flow(def);
+        work.add(def);
     // If not resolved, might now resolve
     if( _val instanceof TypeTuple && ttfp(_val)._fidxs.abit()==-1 )
       Env.GVN.add_reduce(this);
+    // If escapes lowers, can allow e.g. swapping with New
+    if( _val instanceof TypeTuple && tesc(old)!=tesc(_val) )
+      Env.GVN.add_grow(this);
   }
-  @Override public void add_flow_def_extra(Node chg) {
+  
+  @Override public void add_work_def_extra(Work work, Node chg) {
     // Projections live after a call alter liveness of incoming args
     if( chg instanceof ProjNode )
-      Env.GVN.add_flow(in(((ProjNode)chg)._idx));
+      work.add(in(((ProjNode)chg)._idx));
   }
-  @Override public void add_flow_use_extra(Node chg) {
+  
+  @Override public void add_work_use_extra(Work work, Node chg) {
     CallEpiNode cepi = cepi();
     if( chg == fdx() ) {           // FIDX falls to sane from too-high
-      Env.GVN.add_flow_defs(this); // All args become alive
+      add_work_defs(work);         // All args become alive
       if( cepi!=null ) {
         Env.GVN.add_work_all(cepi);  // FDX gets stable, might wire, might unify_lift
-        Env.GVN.add_flow_defs(cepi); // Wired Rets might no longer be alive (might unwire)
+        work.add(cepi);
+        cepi.add_work_defs(work); // Wired Rets might no longer be alive (might unwire)
       }
     } else if( chg == mem() ) {
-      if( cepi != null ) Env.GVN.add_flow(cepi);
+      if( cepi != null ) work.add(cepi);
     } else {                    // Args lifted, may resolve
       if( fdx() instanceof UnresolvedNode )
         Env.GVN.add_reduce(this);
       if( Env.GVN._opt_mode._CG && err(true)==null )
-        Env.GVN.add_flow(mem()); // Call not-in-error, memory may lift
+        work.add(mem());        // Call not-in-error, memory may lift
     }
   }
 
@@ -614,7 +620,7 @@ public class CallNode extends Node {
     BitsFun fidxs = tfp.fidxs();
     if( fidxs.above_center() ) return TypeMem.DEAD; // Nothing above-center is chosen
     if( dfidx != -1 && !fidxs.test_recur(dfidx) ) return TypeMem.DEAD; // Not in the fidx set.
-    if( tfp.is_con() && !(fdx() instanceof FunPtrNode) )
+    if( may_be_con_live(tfp) )
       return TypeMem.DEAD; // Will be replaced by a constant
     // Otherwise the FIDX is alive
     return TypeMem.LNO_DISP;
@@ -627,7 +633,7 @@ public class CallNode extends Node {
     assert choices.abit()!= -1 || (choices.above_center() == (GVN._opt_mode==GVNGCM.Mode.Opto));
     int best_cvts=99999;           // Too expensive
     FunPtrNode best_fptr=null;     //
-    TypeTuple best_formals=null;  //
+    TypeStruct best_formals=null;  //
     boolean tied=false;            // Ties not allowed
     for( int fidx : choices ) {
       // Parent/kids happen during inlining
@@ -636,20 +642,21 @@ public class CallNode extends Node {
           continue;
 
         FunNode fun = FunNode.find_fidx(kidx);
-        if( fun.nargs()!=nargs() || fun.in(0)==fun ) continue; // BAD/dead
-        TypeTuple formals = fun._sig._formals; // Type of each argument
-        int cvts=0;                        // Arg conversion cost
-        for( int j=DSP_IDX; j<nargs(); j++ ) {
-          Type actual = arg(j)._val;
-          Type formal = formals.at(j);
+        if( fun.is_dead() || fun.nargs()!=nargs() || fun.in(0)==fun ) continue; // BAD/dead
+        TypeStruct formals = fun._sig._formals; // Type of each argument
+        int cvts=0;                             // Arg conversion cost
+        for( TypeFld fld : formals.flds() ) {
+          Type actual = arg(fld._order)._val;
+          Type formal = fld._t;
           if( actual==formal ) continue;
+          if( fld._order <= MEM_IDX ) continue; // isBitShape not defined on memory
           if( Type.ALL==formal ) continue; // Allows even error arguments
           byte cvt = actual.isBitShape(formal); // +1 needs convert, 0 no-cost convert, -1 unknown, 99 never
           if( cvt == -1 ) return null; // Might be the best choice, or only choice, dunno
           cvts += cvt;
         }
 
-        if( cvts < best_cvts ) {
+        if( cvts < 99 && cvts < best_cvts ) {
           best_cvts = cvts;
           best_fptr = get_fptr(fun,unk); // This can be null, if function is run-time computed & has multiple displays.
           best_formals = formals;
@@ -657,8 +664,10 @@ public class CallNode extends Node {
         } else if( cvts==best_cvts ) {
           // Look for monotonic formals
           int fcnt=0, bcnt=0;
-          for( int i=0; i<formals._ts.length; i++ ) {
-            Type ff = formals.at(i), bf = best_formals.at(i);
+          for( TypeFld fld : formals.flds() ) {
+            TypeFld best_fld = best_formals.fld_find(fld._fld);
+            if( best_fld==null ) { fcnt=bcnt=-1; break; } // Not monotonic, no obvious winner
+            Type ff = fld._t, bf = best_fld._t;
             if( ff==bf ) continue;
             Type mt = ff.meet(bf);
             if( ff==mt ) bcnt++;       // Best formal is higher than new
@@ -686,10 +695,34 @@ public class CallNode extends Node {
     return null;
   }
 
-  // Gather incoming args.  NOT an application point (yet), that is a CallEpi.
-  //@Override public TV2 new_tvar(String alloc_site) { return TV2.make("Args",this,alloc_site,parms()); }
+  @Override public TV2 new_tvar( String alloc_site) { return null; }
 
-  //@Override public boolean unify( boolean test ) { assert tvar().isa("Args"); return false; }
+  // Resolve a call, removing ambiguity during the GCP/Combo pass.
+  @Override public boolean remove_ambi() {
+    TypeFunPtr tfp = ttfpx(_val);
+    BitsFun fidxs = tfp.fidxs();
+    if( !fidxs.above_center() ) return true; // Resolved after all
+    assert fidxs!=BitsFun.ANY;               // Too many choices
+    // Pick least-cost among choices
+    FunPtrNode fptr = least_cost(fidxs,fdx());
+    if( fptr==null ) return false; // Not resolved, no progress
+    set_dsp(fptr.display());       // Pick up the display
+    set_fdx(fptr);                 // Set resolved edge
+    return true;                   // Progress
+  }
+
+  // See if we can resolve an unresolved Call
+  @Override public void combo_resolve(Work ambi) {
+    if( _live == TypeMem.DEAD ) return;
+    // Wait until the Call is reachable
+    if( ctl()._val != Type.CTRL || !(_val instanceof TypeTuple) ) return;
+    // Only ambiguous if FIDXs are both above_center and there are more than one
+    BitsFun fidxs = ttfp(_val).fidxs();
+    if( !fidxs.above_center() || fidxs.abit() != -1 ) return;
+    // Track ambiguous calls: resolve after GCP gets stable, and if we
+    // can resolve we continue to let GCP fall.
+    ambi.add(this);
+  }
 
   @Override public ErrMsg err( boolean fast ) {
     // Fail for passed-in unknown references directly.
@@ -749,9 +782,9 @@ public class CallNode extends Node {
         for( int kid=fidx; kid!=0; kid = tree.next_kid(fidx,kid) ) {
           FunNode fun = FunNode.find_fidx(kid);
           if( fun==null || fun.is_dead() ) continue;
-          TypeTuple formals = fun._sig._formals; // Type of each argument
+          TypeStruct formals = fun._sig._formals; // Type of each argument
           if( fun.parm(j)==null ) continue;  // Formal is dead
-          Type formal = formals.at(j);
+          Type formal = formals.fld_idx(j)._t;
           if( actual.isa(formal) ) continue; // Actual is a formal
           if( fast ) return ErrMsg.FAST;     // Fail-fast
           if( ts==null ) ts = new Ary<>(new Type[1],0);

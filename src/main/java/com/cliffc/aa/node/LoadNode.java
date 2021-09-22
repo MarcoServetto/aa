@@ -1,11 +1,13 @@
 package com.cliffc.aa.node;
 
-import com.cliffc.aa.*;
+import com.cliffc.aa.Env;
+import com.cliffc.aa.GVNGCM;
+import com.cliffc.aa.Parse;
 import com.cliffc.aa.type.*;
-import com.cliffc.aa.tvar.*;
 import com.cliffc.aa.util.Util;
 import org.jetbrains.annotations.NotNull;
 
+import static com.cliffc.aa.AA.ARG_IDX;
 import static com.cliffc.aa.AA.MEM_IDX;
 
 // Load a named field from a struct.  Does it's own nil-check testing.  Loaded
@@ -15,16 +17,16 @@ public class LoadNode extends Node {
   private final Parse _bad;
 
   public LoadNode( Node mem, Node adr, String fld, Parse bad ) {
-    super(OP_LOAD,null,mem,adr);
+    super(OP_LOAD,null,mem,null,adr);
     _fld = fld;
     _bad = bad;
   }
   @Override public String xstr() { return "."+_fld; }   // Self short name
   String  str() { return xstr(); } // Inline short name
   Node mem() { return in(MEM_IDX); }
-  Node adr() { return in(2); }
-  private Node set_mem(Node a) { return set_def(1,a); }
-  public int find(TypeStruct ts) { return ts.fld_find(_fld); }
+  Node adr() { return in(ARG_IDX); }
+  private Node set_mem(Node a) { return set_def(MEM_IDX,a); }
+  public TypeFld find(TypeStruct ts) { return ts.fld_find(_fld); }
 
   // Strictly reducing optimizations
   @Override public Node ideal_reduce() {
@@ -153,8 +155,8 @@ public class LoadNode extends Node {
         MrgProjNode mrg = (MrgProjNode)mem;
         NewNode nnn = mrg.nnn();
         if( nnn instanceof NewObjNode ) {
-          int idx = ((NewObjNode)nnn)._ts.fld_find(fld);
-          if( idx >= 0 && adr instanceof ProjNode && adr.in(0) == nnn ) return nnn; // Direct hit
+          TypeFld tfld = ((NewObjNode)nnn)._ts.fld_find(fld);
+          if( tfld!=null && adr instanceof ProjNode && adr.in(0) == nnn ) return nnn; // Direct hit
         }  // wrong field name or wrong alias, cannot match
         if( aliases.test_recur(nnn._alias) ) return null; // Overlapping, but wrong address - dunno, so must fail
         mem = mrg.mem(); // Advance past
@@ -162,6 +164,9 @@ public class LoadNode extends Node {
         Node jmem = ((MemJoinNode)mem).can_bypass(aliases);
         if( jmem == null ) return null;
         mem = jmem;
+      } else if( mem instanceof ParmNode ) {
+        if( mem.in(0).is_copy(1)!=null ) mem = mem.in(1); // FunNode is dying, copy, so ParmNode is also
+        else return null;
 
       } else if( mem instanceof PhiNode ||
                  mem instanceof StartMemNode ||
@@ -195,7 +200,7 @@ public class LoadNode extends Node {
 
     // Loading from TypeMem - will get a TypeObj out.
     Node mem = mem();
-    Type tmem = mem._val, tfld; // Memory
+    Type tmem = mem._val;       // Memory
     if( !(tmem instanceof TypeMem) ) return tmem.oob(); // Nothing sane
     TypeObj tobj = ((TypeMem)tmem).ld((TypeMemPtr)tadr);
     if( tobj instanceof TypeStruct )
@@ -204,10 +209,10 @@ public class LoadNode extends Node {
     return tobj.oob();          // No loading from e.g. Strings
   }
 
-  @Override public void add_flow_use_extra(Node chg) {
-    if( chg==adr() ) Env.GVN.add_flow(mem());  // Address into a Load changes, the Memory can be more alive.
-    if( chg==mem() ) Env.GVN.add_flow(mem());  // Memory value lifts to ANY, memory live lifts also.
-    if( chg==mem() ) Env.GVN.add_flow(adr());  // Memory value lifts to an alias, address is more alive
+  @Override public void add_work_use_extra(Work work, Node chg) {
+    if( chg==adr() ) work.add(mem());  // Address into a Load changes, the Memory can be more alive.
+    if( chg==mem() ) work.add(mem());  // Memory value lifts to ANY, memory live lifts also.
+    if( chg==mem() ) work.add(adr());  // Memory value lifts to an alias, address is more alive
     // Memory improves, perhaps Load can bypass Call
     if( chg==mem() && mem().in(0) instanceof CallEpiNode ) Env.GVN.add_reduce(this);
     // Memory becomes a MrgProj, maybe Load can bypass MrgProj
@@ -230,7 +235,7 @@ public class LoadNode extends Node {
 
     // If the load is of a constant, no memory nor address is needed
     Type tfld = get_fld2(((TypeMem)tmem).ld((TypeMemPtr)tptr));
-    if( tfld.is_con() && err(true)==null )
+    if( may_be_con_live(tfld) && err(true)==null )
       return TypeMem.DEAD;
 
     if( def==adr() )            // Load is sane, so address is alive
@@ -247,9 +252,9 @@ public class LoadNode extends Node {
       return tobj.oob();
     // Struct; check for field
     TypeStruct ts = (TypeStruct)tobj;
-    int idx = ts.fld_find(_fld);  // Find the named field
-    if( idx == -1 ) return tobj.oob();
-    return ts.at(idx);          // Field type
+    TypeFld fld = ts.fld_find(_fld);  // Find the named field
+    if( fld==null ) return tobj.oob();
+    return fld._t;          // Field type
   }
   // Upgrade, if !dsp and a function pointer
   private @NotNull Type get_fld2( TypeObj tobj ) {
@@ -263,52 +268,9 @@ public class LoadNode extends Node {
     return tfld;
   }
 
-
-  @Override public boolean unify( boolean test ) {
-    // Input should be a TMem
-    TV2 tmem = tvar(1);
-    if( !tmem.isa("Mem") ) return false;
-    // Address needs to name the aliases
-    Type tadr = val(2);
-    if( !(tadr instanceof TypeMemPtr) ) return false; // Wait until types are sharper
-    TypeMemPtr tmp = (TypeMemPtr)tadr;
-
-    // Make a Obj["fld":self] type.
-    // Make a Ptr:[0:Obj] and unify with the address.
-    // Make a Mem:[alias:Obj] and unify with all aliases.
-
-    // Make a Obj["fld":self] type.
-    TV2 tobj = TV2.make("Obj",(UQNodes) null,"Load_unify");
-    tobj.args_put(_fld,tvar());
-
-    // Make a Ptr:[0:Obj] and unify with the address.
-    TV2 tptr = TV2.make("Ptr",adr(),"Load_unify");
-    tptr.args_put(0,tobj);
-    boolean progress = adr().tvar().unify(tptr,test);
-    if( test && progress ) return progress;
-
-    // Make a Mem:[alias:Obj] and unify with all aliases.
-    for( int alias : tmp._aliases ) {
-      // TODO: Probably wrong, as no reason to believe that as soon as alias
-      // sharpens above AARY that it has hit its best sane value.
-      if( alias <= BitsAlias.AARY ) continue; // No unify on parser-specific values
-      progress |= tmem.unify_at(alias,tobj.find(),test);
-      if( test && progress ) return progress;
-    }
-    return progress;
-  }
-
-  public static boolean unify( Node n, String fld, boolean test, String alloc_site) {
-    // Input should be a TMem
-    TV2 tmem = n.tvar(1);
-    if( !tmem.isa("Mem") ) return false;
-    // Address needs to name the aliases
-    Type tadr = n.val(2);
-    if( !(tadr instanceof TypeMemPtr) ) return false; // Wait until types are sharper
-    TypeMemPtr tmp = (TypeMemPtr)tadr;
-
-    // Unify the given aliases and field against the loaded type
-    return tmem.unify_alias_fld(n,tmp._aliases,fld,n.tvar(),test,alloc_site);
+  // Standard memory unification; the Load unifies with the loaded field.
+  @Override public boolean unify( Work work ) {
+    return StoreNode.unify("@{}",this,adr().tvar(),adr()._val,this,_fld,work);
   }
 
   @Override public ErrMsg err( boolean fast ) {
@@ -325,7 +287,7 @@ public class LoadNode extends Node {
       ? ((TypeMem)tmem).ld(ptr) // General load from memory
       : ((TypeObj)tmem);
     if( objs==TypeObj.UNUSED ) return null; // No error, since might fall to anything
-    if( !(objs instanceof TypeStruct) || find((TypeStruct)objs) == -1 )
+    if( !(objs instanceof TypeStruct) || find((TypeStruct)objs) == null )
       return bad(fast,objs);
     return null;
   }

@@ -1,8 +1,11 @@
 package com.cliffc.aa.node;
 
+import com.cliffc.aa.Combo;
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
+import com.cliffc.aa.tvar.TV2;
 import com.cliffc.aa.type.*;
+import com.cliffc.aa.util.NonBlockingHashMap;
 
 import static com.cliffc.aa.AA.*;
 import static com.cliffc.aa.Env.GVN;
@@ -66,7 +69,7 @@ public final class CallEpiNode extends Node {
 
     // See if we can wire any new fidxs directly between Call/Fun and Ret/CallEpi.
     // This *adds* edges, but enables a lot of shrinking via inlining.
-    if( check_and_wire() ) return this;
+    if( check_and_wire(Env.GVN._work_flow) ) return this;
 
     // The one allowed function is already wired?  Then directly inline.
     // Requires this calls 1 target, and the 1 target is only called by this.
@@ -78,8 +81,8 @@ public final class CallEpiNode extends Node {
       Type tretmem = tret.at(1);
       if( fun != null && fun._defs._len==2 && // Function is only called by 1 (and not the unknown caller)
           (call.err(true)==null || fun._thunk_rhs) &&       // And args are ok
-          (tdef==null || CallNode.emem(tcall).isa(tdef)) && // Pre-GCP, call memory has to be as good as the default
-          (tdef==null || tretmem.isa(tdef)) &&  // Call and return memory at least as good as default
+          (tdef==null || GVN._opt_mode._CG || CallNode.emem(tcall).isa(tdef)) && // Pre-GCP, call memory has to be as good as the default
+          (tdef==null || GVN._opt_mode._CG || tretmem.isa(tdef) ) &&  // Call and return memory at least as good as default
           call.mem().in(0) != call &&   // Dead self-recursive
           fun.in(1)._uses._len==1 &&    // And only calling fun
           ret._live.isa(_live) &&       // Call and return liveness compatible
@@ -93,7 +96,7 @@ public final class CallEpiNode extends Node {
     // Parser thunks eagerly inline
     if( call.fdx() instanceof ThretNode ) {
       ThretNode tret = (ThretNode)call.fdx();
-      wire1(call,tret.thunk(),tret);
+      wire1(Env.GVN._work_flow,call,tret.thunk(),tret);
       return set_is_copy(tret.ctrl(), tret.mem(), tret.rez()); // Collapse the CallEpi into the Thret
     }
 
@@ -116,13 +119,12 @@ public final class CallEpiNode extends Node {
     if( ret==null ) return null;
 
     // Single choice; check no conversions needed.
-    TypeTuple formals = fun._sig._formals;
+    TypeStruct formals = fun._sig._formals;
     for( Node parm : fun._uses ) {
       if( parm instanceof ParmNode && parm.in(0)==fun ) {
         int idx = ((ParmNode)parm)._idx;
-        if( idx < 0 ) continue; // RPC
         Type actual = CallNode.targ(tcall,idx);
-        if( actual.isBitShape(formals.at(idx)) == 99 ) // Requires user-specified conversion
+        if( idx >= ARG_IDX && actual.isBitShape(formals.fld_idx(idx)._t) == 99 ) // Requires user-specified conversion
           return null;
       }
     }
@@ -176,7 +178,7 @@ public final class CallEpiNode extends Node {
 
   // Used during GCP and Ideal calls to see if wiring is possible.
   // Return true if a new edge is wired
-  public boolean check_and_wire( ) {
+  public boolean check_and_wire( Work work ) {
     if( !(_val instanceof TypeTuple) ) return false; // Collapsing
     CallNode call = call();
     Type tcall = call._val;
@@ -196,7 +198,7 @@ public final class CallEpiNode extends Node {
       if( _defs.find(ret) != -1 ) continue;   // Wired already
       if( !CEProjNode.good_call(tcall,fun) ) continue; // Args fail basic sanity
       progress=true;
-      wire1(call,fun,ret);      // Wire Call->Fun, Ret->CallEpi
+      wire1(work,call,fun,ret);      // Wire Call->Fun, Ret->CallEpi
     }
     return progress;
   }
@@ -204,18 +206,18 @@ public final class CallEpiNode extends Node {
   // Wire the call args to a known function, letting the function have precise
   // knowledge of its callers and arguments.  This adds a edges in the graph
   // but NOT in the CG, until _cg_wired gets set.
-  void wire1( CallNode call, Node fun, Node ret ) {
+  void wire1( Work work, CallNode call, Node fun, Node ret ) {
     assert _defs.find(ret)==-1; // No double wiring
-    wire0(call,fun);
+    wire0(work,call,fun);
     // Wire self to the return
     add_def(ret);
-    GVN.add_flow(this);
-    GVN.add_flow(call);
-    GVN.add_flow_defs(call);
+    work.add(this);
+    work.add(call);
+    call.add_work_defs(work);
   }
 
   // Wire without the redundancy check, or adding to the CallEpi
-  void wire0(CallNode call, Node fun) {
+  void wire0(Work work, CallNode call, Node fun) {
     // Wire.  Bulk parallel function argument path add
 
     // Add an input path to all incoming arg ParmNodes from the Call.  Cannot
@@ -235,14 +237,16 @@ public final class CallEpiNode extends Node {
       }
       actual._live = arg._live; // Set it before CSE during init1
       arg.add_def(actual.init1());
+      work.add(actual);       // Also on the Combo worklist
       if( arg._val.is_con() ) // Added an edge, value may change or go in-error
-        GVN.add_flow_defs(arg); // So use-liveness changes
+        arg.add_work_defs(work); // So use-liveness changes
     }
 
     // Add matching control to function via a CallGraph edge.
-    fun.add_def(new CEProjNode(call,fun instanceof FunNode && !((FunNode) fun)._thunk_rhs ? ((FunNode)fun)._sig : null).init1());
-    GVN.add_flow(fun);
-    GVN.add_flow_uses(fun);
+    Node cep = new CEProjNode(call).init1();
+    fun.add_def(work.add(cep));
+    work.add(fun);
+    for( Node use : fun._uses ) work.add(use);
     if( fun instanceof ThunkNode ) GVN.add_reduce_uses(fun);
     if( fun instanceof FunNode ) GVN.add_inline((FunNode)fun);
   }
@@ -278,7 +282,7 @@ public final class CallEpiNode extends Node {
     if( fidxs==BitsFun.EMPTY ) return TypeTuple.CALLE.dual();
     if( fidxs.above_center() ) return TypeTuple.CALLE.dual(); // Not resolved yet
 
-    // Default memory: global worse-case scenario
+    // Default memory: global worst-case scenario
     TypeMem defmem = Env.DEFMEM._val instanceof TypeMem
       ? (TypeMem)Env.DEFMEM._val
       : Env.DEFMEM._val.oob(TypeMem.ALLMEM);
@@ -340,23 +344,29 @@ public final class CallEpiNode extends Node {
 
     // Approximate "live out of call", includes things that are alive before
     // the call but not flowing in.  Catches all the "new in call" returns.
-    BitsAlias esc_out = esc_out(post_call,trez);
     TypeMem caller_mem = premem instanceof TypeMem ? (TypeMem)premem : premem.oob(TypeMem.ALLMEM);
-    int len = opt_mode._CG ? Math.max(caller_mem.len(),post_call.len()) : defmem.len();
-    TypeObj[] pubs = new TypeObj[len];
-    for( int i=1; i<pubs.length; i++ ) {
-      boolean ein  = tescs._aliases.test_recur(i);
-      boolean eout = esc_out       .test_recur(i);
-      TypeObj pre = caller_mem.at(i);
-      TypeObj obj = ein || eout ? (TypeObj)(pre.meet(post_call.at(i))) : pre;
-      if( !opt_mode._CG )       // Before GCP, must use DefMem to keeps types strong as the Parser
-        obj = (TypeObj)obj.join(defmem.at(i));
-      pubs[i] = obj;
+    TypeMem tmem3 = live_out(caller_mem,post_call,trez,tescs._aliases,opt_mode._CG ? null : defmem);
+
+    // Attempt to lift the result, based on HM types.  Walk the input HM type
+    // and GCP flow type in parallel and create a mapping.  Then walk the
+    // output HM type and CCP flow type in parallel, and join output CCP types
+    // with the matching input CCP type.
+    if( Combo.DO_HM && opt_mode._CG ) {
+      // Walk the inputs, building a mapping
+      CallNode call = call();
+      TV2.T2MAP.clear();
+      for( int i=DSP_IDX; i<call._defs._len-1; i++ )
+        { TV2.WDUPS.clear(); call.tvar(i).walk_types_in(caller_mem,call.val(i)); }
+      // Walk the outputs, building an improved result
+      Type trez2 = tvar().walk_types_out(trez,this);
+      Type trez3 = trez2.join(trez); // Lift result
+      assert trez3.isa(trez);        // Monotonic...
+      trez = trez3;                  // Upgrade
     }
-    TypeMem tmem3 = TypeMem.make0(pubs);
 
     return TypeTuple.make(Type.CTRL,tmem3,trez);
   }
+
 
   static BitsAlias esc_out( TypeMem tmem, Type trez ) {
     if( trez == Type.XNIL || trez == Type.NIL ) return BitsAlias.EMPTY;
@@ -366,12 +376,34 @@ public final class CallEpiNode extends Node {
     return TypeMemPtr.OOP0.dual().isa(trez) ? BitsAlias.NZERO : BitsAlias.EMPTY;
   }
 
-  @Override public void add_flow_use_extra(Node chg) {
-    if( chg instanceof CallNode ) { // If the Call changes value
-      Env.GVN.add_flow(chg.in(MEM_IDX));       // The called memory   changes liveness
-      Env.GVN.add_flow(((CallNode)chg).fdx()); // The called function changes liveness
-      for( int i=0; i<nwired(); i++ )          // Called returns change liveness
-        Env.GVN.add_flow(wired(i));
+  // Approximate "live out of call", includes things that are alive before
+  // the call but not flowing in.  Catches all the "new in call" returns.
+  static TypeMem live_out(TypeMem caller_mem, TypeMem post_call, Type trez, BitsAlias esc_in, TypeMem defmem) {
+    BitsAlias esc_out = esc_out(post_call,trez);
+    int len = defmem==null ? Math.max(caller_mem.len(),post_call.len()) : defmem.len();
+    TypeObj[] pubs = new TypeObj[len];
+    // TODO: Wildly inefficient
+    for( int i=1; i<pubs.length; i++ ) {
+      boolean ein  = esc_in .test_recur(i);
+      boolean eout = esc_out.test_recur(i);
+      TypeObj pre = caller_mem.at(i);
+      TypeObj obj = ein || eout ? (TypeObj)(pre.meet(post_call.at(i))) : pre;
+      // Before GCP, must use DefMem to keeps types strong as the Parser
+      // During GCP, can lift default actual memories.
+      if( defmem!=null ) // Before GCP, must use DefMem to keeps types strong as the Parser
+        obj = (TypeObj)obj.join(defmem.at(i));
+      pubs[i] = obj;
+    }
+    TypeMem tmem3 = TypeMem.make0(pubs);
+    return tmem3;
+  }
+
+  @Override public void add_work_use_extra(Work work, Node chg) {
+    if( chg instanceof CallNode ) {    // If the Call changes value
+      work.add(chg.in(MEM_IDX));       // The called memory   changes liveness
+      work.add(((CallNode)chg).fdx()); // The called function changes liveness
+      for( int i=0; i<nwired(); i++ )  // Called returns change liveness
+        work.add(wired(i));
     }
   }
 
@@ -454,51 +486,46 @@ public final class CallEpiNode extends Node {
     return _live;
   }
 
-  //@Override public TV2 new_tvar(String alloc_site) {
-  //  return _is_copy
-  //    ? TV2.make_leaf(this,alloc_site)
-  //    : TV2.make("Ret",this,alloc_site).push_dep(this);
-  //}
+  @Override public boolean unify( Work work ) {
+    assert !_is_copy;
+    CallNode call = call();
+    Node fdx = call.fdx();
+    TV2 tfun = fdx.tvar();
+    TV2 tvar = tvar();
+    if( tfun.is_err() )
+      return tvar().unify(tfun,work);
 
-  //@Override public boolean unify( boolean test ) {
-  //  if( _is_copy ) return false; // A copy
-  //  // Build a HM tvar (args->ret), same as HM.java Apply does.
-  //  Node fdx = call().fdx();
-  //  TV2 tfdx = fdx.tvar();
-  //  if( tfdx.is_leaf() ) return false; // Wait?  probably need for force fresh-fun
-  //  if( tfdx.is_dead() ) return false;
-  //  TV2 tcargs = call().tvar();
-  //  TV2 tcret  = tvar();
-  //  if( tcret.is_dead() ) return false;
-  //
-  //  // Thunks are a little odd, because they cheat on graph structure.
-  //  if( tfdx.isa("Ret") ) {     // The fdx._tvar is a Ret not a Fun
-  //    if( tcret == tfdx ) return false;
-  //    boolean progress = tfdx.unify(tcret,test);
-  //    if( progress && !test )
-  //      Env.GVN.add_flow_uses(call()); // Progress, neighbors on list
-  //    return progress;
-  //  }
-  //
-  //  // In an effort to detect possible progress without constructing endless
-  //  // new TV2s, we look for a common no-progress situation by inspecting the
-  //  // first layer in.
-  //  TV2 tfargs = tfdx.get("Args");
-  //  TV2 tfret  = tfdx.get("Ret" );
-  //  if( tfdx.isa("Fun") && tcargs==tfargs && tcret==tfret ) return false; // Equal parts, no progress
-  //
-  //  // Will make progress aligning the shapes
-  //  NonBlockingHashMap<Comparable,TV2> args = new NonBlockingHashMap<Comparable,TV2>(){{ put("Args",tcargs);  put("Ret",tcret); }};
-  //  TV2 tfun = TV2.make("Fun",fdx,"CallEpi_unify_Fun",args);
-  //  boolean progress = tfdx.unify(tfun,test);
-  //  if( progress && !test ) {
-  //    Env.GVN.add_flow_uses(call()); // Progress, neighbors on list
-  //    tcret.find().push_dep(this);
-  //    if( fdx instanceof FreshNode )
-  //      Env.GVN.add_reduce(fdx);
-  //  }
-  //  return progress;
-  //}
+    boolean progress = false;
+    if( !tfun.is_fun() ) {
+      if( work==null ) return true;
+      NonBlockingHashMap<String,TV2> args = new NonBlockingHashMap<>();
+      for( int i=DSP_IDX; i<call._defs._len-1; i++ )
+        args.put(""+i,call.tvar(i));
+      args.put(" ret",tvar);
+      progress = tfun.unify(TV2.make_fun(this, fdx._val, args, "CallEpi_unify"), work);
+      tfun = tfun.find();
+    }
+    // TODO: Handle Thunks
+
+    if( tfun.len()-1-1 != call._defs._len-1-ARG_IDX ) //
+      //progress = T2.make_err("Mismatched argument lengths").unify(find(), work);
+      throw unimpl();
+
+    // Check for progress amongst args
+    for( int i=DSP_IDX; i<call._defs._len-1; i++ ) {
+      TV2 actual = call.tvar(i);
+      TV2 formal = tfun.get(""+i);
+      if( actual!=formal ) {
+        progress |= actual.unify(formal,work);
+        if( progress && work==null ) return true; // Early exit
+        if( tfun.is_unified() || tfun.is_err() ) throw unimpl();
+      }
+    }
+    // Check for progress on the return
+    progress |= tfun.get(" ret").unify(tvar,work);
+    if( tfun.is_unified() || tfun.is_err() ) throw unimpl();
+    return progress;
+  }
 
   @Override Node is_pure_call() { return in(0) instanceof CallNode ? call().is_pure_call() : null; }
   // Return the set of updatable memory - including everything reachable from

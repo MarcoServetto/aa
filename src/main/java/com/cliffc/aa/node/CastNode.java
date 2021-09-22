@@ -2,14 +2,17 @@ package com.cliffc.aa.node;
 
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
+import com.cliffc.aa.tvar.TV2;
 import com.cliffc.aa.type.Type;
 import com.cliffc.aa.type.TypeMem;
 import com.cliffc.aa.type.TypeTuple;
 import org.jetbrains.annotations.NotNull;
 
+import static com.cliffc.aa.AA.unimpl;
+
 // Gain precision after an If-test.
 public class CastNode extends Node {
-  public final Type _t;                // TypeVar???
+  public final Type _t;
   public CastNode( Node ctrl, Node ret, Type t ) {
     super(OP_CAST,ctrl,ret); _t=t;
     Env.GVN._work_dom.add(this);
@@ -54,17 +57,62 @@ public class CastNode extends Node {
     // Lift result.
     return _t.join(t);
   }
-  @Override public void add_flow_extra(Type old) {
+  @Override public void add_work_extra(Work work, Type old) {
     // If address sharpens, Cast can go dead because all Load uses make constants.
     if( _val!=old )
-      Env.GVN.add_flow(this);
+      work.add(this);
   }
   @Override public TypeMem live_use(GVNGCM.Mode opt_mode, Node def ) {
     return def==in(0) ? TypeMem.ALIVE : _live;
   }
 
-  @Override public boolean unify(boolean test) { return tvar(1).unify(tvar(),test); }
-  
+  // Unifies the input to '(Nil ?:self)'
+  @Override public boolean unify( Work work ) {
+    TV2 maynil = tvar(1); // arg in HM
+    TV2 notnil = tvar();  // ret in HM
+    boolean progress = false;
+
+    // Can already be nil-checked and will then unify to self
+    if( maynil==notnil ) throw unimpl(); // return false;
+
+    // Already an expanded nilable
+    if( maynil.is_nil() && maynil.get("?") == notnil ) throw unimpl(); // return false
+
+    // Expand nilable to either base
+    if( maynil.is_base() && notnil.is_base() )
+      throw unimpl(); //
+
+    // Two structs, one nilable.  Nilable is moved into the alias, but also
+    // need to align the fields.
+    if( maynil.is_struct() && notnil.is_struct() && maynil._type == maynil._type.meet_nil(Type.XNIL) ) {
+      // Also check that the fields align
+      for( String fld : maynil.args() ) {
+        TV2 mfld = maynil.get(fld);
+        TV2 nfld = notnil.get(fld);
+        if( nfld!=null && nfld!=mfld )
+          { progress = true; break; } // Unequal fields
+        //if( nfld==null && notnil.open() ) // Missing field case, cannot find a test case
+        //  { progress = true; break; }
+      }
+      // Find any extra fields
+      if( !progress && maynil.open() )
+        for( String fld : notnil.args() )
+          if( maynil.get(fld) == null )
+            { progress = true; break; }
+      if( !progress ) return false; // No progress
+    }
+
+    // All other paths may progress
+    if( work == null ) return true;
+
+    // Can be nilable of nilable; fold the layer
+    if( maynil.is_nil() && notnil.is_nil() )
+      throw unimpl(); // return maynil.unify(notnil,work);
+
+    // Unify the maynil with a nilable version of notnil
+    return TV2.make_nil(in(1),val(1),notnil,"Cast_unify").push_dep(this).find().unify(maynil, work) | progress;
+  }
+
   @Override public @NotNull CastNode copy( boolean copy_edges) {
     CastNode nnn = (CastNode)super.copy(copy_edges);
     return Env.GVN._work_dom.add(nnn);

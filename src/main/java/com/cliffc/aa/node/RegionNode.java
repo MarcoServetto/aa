@@ -4,6 +4,7 @@ import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
 import com.cliffc.aa.type.Type;
 import com.cliffc.aa.type.TypeMem;
+import com.cliffc.aa.tvar.TV2;
 
 import java.util.function.Predicate;
 
@@ -67,7 +68,7 @@ public class RegionNode extends Node {
 
     return null;
   }
-  @Override public void add_flow_def_extra(Node chg) {
+  @Override public void add_work_def_extra(Work work, Node chg) {
     if( chg.is_CFG() ) {           // If losing an extra CFG user
       for( Node use : _uses )
         if( use._op == OP_REGION ) // Then stacked regions can fold
@@ -128,30 +129,19 @@ public class RegionNode extends Node {
     return Type.XCTRL;
   }
   // Control into a Region allows Phis to make progress
-  @Override public void add_flow_use_extra(Node chg) {
+  @Override public void add_work_use_extra(Work work, Node chg) {
     Env.GVN.add_reduce(this);
     for( Node phi : _uses )
       if( phi instanceof PhiNode ) {
-        Env.GVN.add_flow(phi);
-        Env.GVN.add_flow_defs(phi); // Inputs to Phi change liveness
+        work.add(phi);
+        phi.add_work_defs(work); // Inputs to Phi change liveness
       }
   }
 
   @Override public TypeMem all_live() { return TypeMem.ALIVE; }
   @Override public TypeMem live_use(GVNGCM.Mode opt_mode, Node def ) { return TypeMem.ALIVE; }
 
-  //@Override public TV2 new_tvar(String alloc_site) { return TV2.make_base(this,Type.CTRL,alloc_site); }
-  //
-  //// All (Base:Ctrl) inputs unify
-  //@Override public boolean unify( boolean test ) {
-  //  boolean progress = false;
-  //  for( int i=1; i<_defs._len; i++ )
-  //    if( val(i)!=Type.XCTRL && val(i)!=Type.ANY ) { // Only unify alive paths
-  //      progress |= tvar().unify(tvar(i),test);
-  //      if( progress && test ) return true;
-  //    }
-  //  return progress;
-  //}
+  @Override public TV2 new_tvar(String alloc_site) { return null; }
 
   // Complex dominator tree.  Ok to subset, attempt the easy walk
   @Override Node walk_dom_last(Predicate<Node> P) {

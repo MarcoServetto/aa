@@ -71,9 +71,10 @@ public class TypeObj<O extends TypeObj<O>> extends Type<O> {
     return TypeAry.ARY.dual().update(idx,val);
   }
 
-  TypeObj flatten_fields() { return this; }
+  public TypeObj flatten_fields() { return this; }
   TypeObj remove_other_flds(String fld, Type live) { return UNUSED; }
-  @Override public TypeObj widen() { return ISUSED; }
+  @Override public TypeObj  widen() { return ISUSED; }
+  @Override        TypeObj _widen() { return widen(); }
   @Override public boolean above_center() { return _any; }
   @Override public boolean may_be_con() { return _any; }
   @Override public boolean is_con() { return false; }

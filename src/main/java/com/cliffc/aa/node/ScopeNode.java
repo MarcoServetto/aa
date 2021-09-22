@@ -1,14 +1,16 @@
 package com.cliffc.aa.node;
 
-import com.cliffc.aa.*;
+import com.cliffc.aa.Env;
+import com.cliffc.aa.GVNGCM;
+import com.cliffc.aa.Parse;
 import com.cliffc.aa.type.*;
 import com.cliffc.aa.util.Ary;
 
 import java.util.HashMap;
 import java.util.function.Predicate;
 
+import static com.cliffc.aa.AA.*;
 import static com.cliffc.aa.type.TypeFld.Access;
-import static com.cliffc.aa.AA.MEM_IDX;
 
 // Lexical-Scope Node.  Tracks control & phat memory, plus a stack frame (which
 // is just a NewNode).  The stack frame maps local variable names to Nodes and
@@ -61,7 +63,7 @@ public class ScopeNode extends Node {
         for( Node use : old._uses )
           if( use instanceof MemSplitNode )
             Env.GVN.add_mono(((MemSplitNode)use).join());
-      old.add_flow_def_extra(n); // old loses a use, triggers extra
+      old.add_work_def_extra(Env.GVN._work_flow,n); // old loses a use, triggers extra
       Env.GVN.add_work_all(n);
     }
     return this;
@@ -80,6 +82,7 @@ public class ScopeNode extends Node {
   public    PhiNode early_mem () { return (   PhiNode)in(5); }
   public    PhiNode early_val () { return (   PhiNode)in(6); }
   public void       early_kill() { pop(); pop(); pop(); }
+  static final int RET_IDX = 7;
 
   // Name to type lookup, or null
   public ConTypeNode get_type(String name) { return _types.get(name);  }
@@ -92,7 +95,7 @@ public class ScopeNode extends Node {
         return ctn;
     return null;
   }
-  
+
   // Extend the current Scope with a new type; cannot override existing name.
   public void add_type( String name, ConTypeNode t ) {
     assert _types.get(name)==null;
@@ -118,24 +121,64 @@ public class ScopeNode extends Node {
       // Wipe out return memory
       return set_mem(Node.con(TypeMem.XMEM));
 
-    return null;
+    // If the result is never a function
+    int progress = _defs._len;
+    if( Env.GVN._opt_mode._CG &&
+        !TypeFunPtr.GENERIC_FUNPTR.dual().isa(trez) || trez==Type.XNIL )
+      // Wipe out extra function edges.  They are there to act "as if" the
+      // exit-scope calls them; effectively an extra wired call use with the
+      // most conservative caller.
+      while( _defs._len > RET_IDX ) pop();
+    // If the result is a function, wipe out wrong fidxs
+    if( Env.GVN._opt_mode._CG &&
+        trez instanceof TypeFunPtr ) {
+      BitsFun fidxs = ((TypeFunPtr)trez)._fidxs;
+      for( int i=RET_IDX; i<_defs._len; i++ )
+        if( !fidxs.test(((RetNode)in(i))._fidx) )
+          remove(i--);
+    }
+
+    return progress == _defs._len ? null : this;
   }
   @Override public Type value(GVNGCM.Mode opt_mode) { return Type.ALL; }
   @Override public TypeMem all_live() { return TypeMem.ALLMEM; }
+  @Override public void add_work_use_extra(Work work, Node chg) {
+    if( chg==rez() )            // If the result changed
+      GVNGCM.add_work_uses(work,this);// Then default-reachable functions changed
+  }
 
   // From a memory and a possible pointer-to-memory, find all the reachable
   // aliases and fold them into 'live'.  This is unlike other live_use
   // because this "turns around" the incoming live memory to also be the
   // demanded/used memory.
-  static TypeMem compute_live_mem(Node mem, Node rez) {
+  static TypeMem compute_live_mem(ScopeNode scope, Node mem, Node rez) {
     Type tmem = mem._val;
     Type trez = rez._val;
     if( !(tmem instanceof TypeMem ) ) return tmem.oob(TypeMem.ALLMEM); // Not a memory?
-    if( TypeMemPtr.OOP.isa(trez) ) return ((TypeMem)tmem).flatten_fields(); // All possible pointers, so all memory is alive
+    TypeMem tmem0 = (TypeMem)tmem;
+    if( TypeMemPtr.OOP.isa(trez) ) return tmem0.flatten_fields(); // All possible pointers, so all memory is alive
+    // For function pointers, all memory returnable from any function is live.
+    if( trez instanceof TypeFunPtr && scope != null ) {
+      BitsFun fidxs = ((TypeFunPtr)trez)._fidxs;
+      Type disp = ((TypeFunPtr)trez)._disp;
+      BitsAlias esc_in = disp instanceof TypeMemPtr ? ((TypeMemPtr)disp)._aliases : BitsAlias.EMPTY;
+      TypeMem tmem3 = TypeMem.ANYMEM;
+      for( int i=RET_IDX; i<scope._defs._len; i++ ) {
+        RetNode ret = (RetNode)scope.in(i);
+        int fidx = ret.fidx();
+        if( ret._val instanceof TypeTuple && fidxs.test(fidx) ) {
+          TypeTuple tret = (TypeTuple)ret._val;
+          TypeMem post_call = (TypeMem)tret.at(MEM_IDX);
+          Type trez2 = tret.at(REZ_IDX);
+          TypeMem cepi_out = CallEpiNode.live_out(tmem0, post_call, trez2, esc_in, null);
+          tmem3 = (TypeMem)tmem3.meet(cepi_out);
+        }
+      }
+      return tmem3.flatten_fields();
+    }
     if( !(trez instanceof TypeMemPtr) ) return TypeMem.ANYMEM; // Not a pointer, basic live only
     if( trez.above_center() ) return TypeMem.ANYMEM; // Have infinite choices still, report basic live only
     // Find everything reachable from the pointer and memory, and report it all
-    TypeMem tmem0 = (TypeMem)tmem;
     BitsAlias aliases = tmem0.all_reaching_aliases(((TypeMemPtr)trez)._aliases);
     return tmem0.slice_reaching_aliases(aliases).flatten_fields();
   }
@@ -144,9 +187,8 @@ public class ScopeNode extends Node {
     // Prim scope is not used past Call-Graph discovery
     if( this==Env.SCP_0 )  return opt_mode._CG ? TypeMem.DEAD : TypeMem.ALLMEM;
     if( opt_mode == GVNGCM.Mode.Parse ) return TypeMem.MEM;
-    assert _uses._len==0;
     // All fields in all reachable pointers from rez() will be marked live
-    return compute_live_mem(mem(),rez());
+    return compute_live_mem(this,mem(),rez());
   }
 
   @Override public TypeMem live_use(GVNGCM.Mode opt_mode, Node def ) {
@@ -164,6 +206,9 @@ public class ScopeNode extends Node {
     // pointer, this will include the memory slice.
     if( def == mem() )
       return opt_mode==GVNGCM.Mode.Parse ? TypeMem.ALLMEM : _live.flatten_fields();
+    // Top-level function pointer escape
+    if( def instanceof RetNode )
+      return _live;
     // Merging exit path
     return def._live;
   }

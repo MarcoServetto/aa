@@ -3,7 +3,10 @@ package com.cliffc.aa.node;
 import com.cliffc.aa.AA;
 import com.cliffc.aa.Env;
 import com.cliffc.aa.GVNGCM;
+import com.cliffc.aa.tvar.TV2;
 import com.cliffc.aa.type.*;
+
+import static com.cliffc.aa.AA.ARG_IDX;
 
 // Split control
 public class IfNode extends Node {
@@ -30,7 +33,7 @@ public class IfNode extends Node {
     }
 
     if( tst instanceof PrimNode.Not && tst._uses._len==1 )
-      return flip(Env.GVN.xreduce(new IfNode(ctl,tst.in(1))));
+      return flip(Env.GVN.xreduce(new IfNode(ctl,tst.in(ARG_IDX))));
 
     return null;
   }
@@ -80,7 +83,7 @@ public class IfNode extends Node {
   }
   @Override public TypeMem all_live() { return TypeMem.ALIVE; }
 
-  //@Override public TV2 new_tvar(String alloc_site) { return TV2.make("If",this,alloc_site); }
+  @Override public TV2 new_tvar(String alloc_site) { return null; }
 
   @Override public Node is_copy(int idx) {
     if( !(_val instanceof TypeTuple) ) return null;
