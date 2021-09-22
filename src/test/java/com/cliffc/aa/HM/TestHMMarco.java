@@ -1,4 +1,5 @@
 package com.cliffc.aa.HM;
+//unordered_fields
 
 import com.cliffc.aa.HM.HM.*;
 import org.junit.Before;
@@ -25,6 +26,23 @@ public class TestHMMarco {
     Root syn = HM.hm(code);
     assertEquals(stripIndent(type),stripIndent(syn._hmt.p()));    
   }
+  
+  @Test public void testId() {ok("""
+    all={a->a};
+    all
+    ""","""
+    {A->A}
+    """);}
+  @Test public void testScratch() {ok("""
+      all=@{
+        id1={a->a}
+        id2={a->a}
+        };
+      all
+      ""","""
+      @{id1={A->A};id2={B->B}}
+      """);}
+  
   @Test public void test51() {ok("""
     total_size = { a as -> 
       (if as                
@@ -33,7 +51,7 @@ public class TestHMMarco {
       )};
     total_size      
     ""","""
-    { A:@{ size = int64} B:@{ next = B, val = A}? -> int64 }    
+    { A:@{ size = int64;...} B:@{ next = B; val = A;...}? -> int64 }    
     """);
     }
   //still need to test some stuff around here
@@ -51,12 +69,14 @@ public class TestHMMarco {
     {
     A:@{
       next=B:@{
-        next=B,
-        size=int64,
-        val=A
-        }?,
-      size=int64,
-      val=A
+        next=B;
+        size=int64;
+        val=A;
+        ...
+        }?;
+      size=int64;
+      val=A;
+      ...
       }
     B
     ->
@@ -74,20 +94,20 @@ public class TestHMMarco {
     false = @{
       and      = {b -> false}
       or       = {b -> b}
-      thenElse = {then else->(else void) }      
+      thenElse = {then else->(else void) }     
       };
     boolSub ={b ->(if b true false)};
     @{true=(boolSub 1) false=(boolSub 0)}    
     ""","""
     @{ 
       false = A:@{
-        and      = { A -> A },
-        or       = { A -> A },
+        and      = { A -> A };
+        or       = { A -> A };
         thenElse = { { () -> B } { () -> B } -> B }
-        },
+        };
       true = C:@{
-        and      = { C -> C },
-        or       = { C -> C },
+        and      = { C -> C };
+        or       = { C -> C };
         thenElse = { { () -> D } { () -> D } -> D }
         }
       }
@@ -111,15 +131,15 @@ public class TestHMMarco {
     ""","""
     @{
       false=A:@{
-        and={A->A},
-        not={B->A},
-        or={A->A},
+        and={A->A};
+        not={B->A};
+        or={A->A};
         thenElse={ {()->C} {()->C}  -> C  }
-        },
+        };
       true=D:@{
-        and={D->D},
-        not={E->D},
-        or={D->D},
+        and={D->D};
+        not={E->D};
+        or={D->D};
         thenElse={ {()->F} {()->F}  -> F  }
         }
       }
@@ -142,6 +162,7 @@ public class TestHMMarco {
     @{true=(boolSub 1) false=(boolSub 0)}    
     ""","Parse error, false is undefined in");}
 
+  //This changed and becomed less precise. Is this what we want?
   @Test public void testMyBoolsSmallType() {ok("""
     all=
       true = @{
@@ -155,15 +176,13 @@ public class TestHMMarco {
       boolSub = {b ->(if b all.true all.false)};
       @{true=true false=false boolSub=boolSub};
     all    
-    """,/*We would like the unrelated true/false
-    with the flag DO_GCP to true we get an ill formed type with free variable as result
-    */"""
+    ""","""
     @{
       boolSub={ A?  ->  B:@{
-        not={C->B},
+        not={C->B};
         thenElse={  {5->D} {5->D}  ->  D }
-        }},
-      false=B,
+        }};
+      false=B;
       true=B
       }
     """);}
@@ -187,31 +206,31 @@ public class TestHMMarco {
     ""","""
     @{
       false=A:@{
-        and={A->A},
+        and={A->A};
         not={
           B ->
           C:@{
-            and={C->C},
-            not={()->A},
-            or={C->C},
+            and={C->C};
+            not={()->A};
+            or={C->C};
             thenElse={ {()->D} {()->D}  ->  D }
             }
-          },
-        or={A->A},
+          };
+        or={A->A};
         thenElse={ {()->E} {()->E} -> E }
-        },
+        };
       true=F:@{
-        and={F->F},
+        and={F->F};
         not={
           G ->
           H:@{
-            and={H->H},
-            not={()->F},
-            or={H->H},
+            and={H->H};
+            not={()->F};
+            or={H->H};
             thenElse={ {()->I} {()->I} -> I }
             }
-          },
-        or={F->F},
+          };
+        or={F->F};
         thenElse={ {()->J} {()->J} -> J }
         }
       }
@@ -236,22 +255,22 @@ public class TestHMMarco {
     true=(boolSub 1);
     false=(boolSub 0);    
     z = @{
-      isZero = {unused ->true},
+      isZero = {unused ->true}
       pred = err
-      succ = {n -> (s n)},
+      succ = {n -> (s n)}
       add = {n-> n}
       };
     orZero = {n ->(true.thenElse n z)};
     s = {pred ->
       self=@{
-        isZero = {unused ->false},
-        pred = {unused->pred},
-        succ = {unused -> (s self)},
+        isZero = {unused ->false}
+        pred = {unused->pred}
+        succ = {unused -> (s self)}
         add ={m -> (self.succ (pred.add m))}
         };
       (orZero self)
       };
-    @{true=true, false=false, z=z, s=s}    
+    @{true=true false=false z=z s=s}    
     ""","Parse error, s is undefined in (s n)");}
 //  -So, now we must use master
 //  -try the 'one' outside of all. those it still causes unifications?
@@ -271,76 +290,76 @@ public class TestHMMarco {
         };
       boolSub ={b ->(if b true false)};
       z = @{
-        isZero = {unused ->all.true},
+        isZero = {unused ->all.true}
         pred = err
-        succ = {n -> (all.s n)},
+        succ = {n -> (all.s n)}
         add = {n-> n}
         };
       orZero = {n ->(true.thenElse {unused ->n} {unused ->z})};
       s = {pred ->
         self=@{
-          isZero = {unused ->all.false},
-          pred = {unused->pred},
-          succ = {unused -> (all.s self)},
+          isZero = {unused ->all.false}
+          pred = {unused->pred}
+          succ = {unused -> (all.s self)}
           add ={m -> (self.succ (pred.add m))}
           };
         (orZero self)
         };
       one =(s z);
-      @{true=(boolSub 1), false=(boolSub 0), z=z, s=s};
+      @{true=(boolSub 1) false=(boolSub 0) z=z s=s};
     all
     ""","""
     @{
       false=A:@{
-        and={A->A},
-        or={A->A},
+        and={A->A};
+        or={A->A};
         thenElse={{()->B}{()->B}->B}
-        },
+        };
       s={
         C:@{
-          add={C->C},
-          isZero={D->A},
-          pred={E->C},
+          add={C->C};
+          isZero={D->A};
+          pred={E->C};
           succ={C->C}
           }
         ->C
-        },
-      true=A,
+        };
+      true=A;
       z=@{
-        add={F->F},
-        isZero={G->A},
-        pred={H->I},
+        add={F->F};
+        isZero={G->A};
+        pred={H->I};
         succ={C->C}
         }
       }
     """/*
     @{
       false=A:@{
-        and={A->A},
+        and={A->A};
         or={
           B:@{
-            and={A->A},
-            or={B->B},
+            and={A->A};
+            or={B->B};
             thenElse={{()->C}{()->C}->C}
             }
           ->B
-          },
+          };
         thenElse={{()->D}{()->D}->D}
-        },
+        };
       s={
         E:@{
-          add={F->E},
-          isZero={G->A},//here is zero will only return a false (also for the input of the succ function)
-          pred={H->E},//here predecessor of successor must still be a successor
+          add={F->E};
+          isZero={G->A};//here is zero will only return a false (also for the input of the succ function)
+          pred={H->E};//here predecessor of successor must still be a successor
           succ={E->E}
           }
         ->E
-        },
-      true=B,
+        };
+      true=B;
       z=@{//zero.add is correctly typed in a more flexible way then successor:
-        add={I->I},//anything into anything
-        isZero={J->B},//must be true by the type system
-        pred={K->L},
+        add={I->I};//anything into anything
+        isZero={J->B};//must be true by the type system
+        pred={K->L};
         succ={E->E}//indeed, successor was broken in zero (defined as binary method)
         }
       }
@@ -362,16 +381,16 @@ public class TestHMMarco {
     """;
   static final String goodBaseNat="""
     z = @{
-      isZero = {unused ->all.true},
+      isZero = {unused ->all.true}
       pred = err
-      succ = {unused -> (all.s all.z)},
+      succ = {unused -> (all.s all.z)}
       add = {n-> n}
       };
     s = {pred ->
       self=@{
-        isZero = {unused ->all.false},
-        pred = {unused->pred},
-        succ = {unused -> (all.s self)},
+        isZero = {unused ->all.false}
+        pred = {unused->pred}
+        succ = {unused -> (all.s self)}
         add    = {m -> ((pred.add m).succ void)}
         };
       self
@@ -386,25 +405,25 @@ public class TestHMMarco {
       """
     +goodBaseBool
     +goodBaseNat+"""
-      @{true=true, false=false, z=z, s=s};
+      @{true=true false=false z=z s=s};
     all
     ""","""
     @{
       false=A:@{
-        and={A->A},
-        or={A->A},
+        and={A->A};
+        or={A->A};
         thenElse={{()->B}{()->B}->B}
-        },
+        };
       s={
         C:@{
-          add={C->C},
-          isZero={D->A},
-          pred={E->C},
+          add={C->C};
+          isZero={D->A};
+          pred={E->C};
           succ={()->C}
           }
         ->C
-        },
-      true=A,
+        };
+      true=A;
       z=C
       }
     """);}
@@ -412,22 +431,81 @@ public class TestHMMarco {
     all=
       """
       +goodBaseBool+"""
-      @{true=true, false=false};
+      @{true=true false=false};
     all
     ""","""
     @{
       false=A:@{
-        and     = {B->A},
-        or      = {C->C},
+        and     = {B->A};
+        or      = {C->C};
         thenElse= {D {()->E} ->E}
-        },
+        };
       true=F:@{
-        and     = {G->G},
-        or      = {H->F},
+        and     = {G->G};
+        or      = {H->F};
         thenElse= {{()->I} J ->I}
         }
       }
     """);}
+  @Test public void testMiniNat() {ok("""
+      void = @{};
+      err  = {unused->(err unused)};
+      n=
+        z = @{
+          pred   = err
+          succ   = {unused -> (n.s n.z)}
+          add    = {o-> o}
+          };
+        s = {pred ->
+          self=@{
+            pred   = {unused->pred}
+            succ   = {unused -> (n.s self)}
+            add    = {m -> ((pred.add m).succ void)}
+            };
+          self
+          };
+        @{s=s z=z};
+      notZero =@{
+          pred   = err
+          succ   = {unused -> (n.s n.z)}
+          add    = {o-> o}
+          nope   = void
+          };
+      one = (n.s n.z);
+      notOne = (one.add notZero);
+      notNope = (one.add notZero).nope;
+      @{n=n one=one notOne=notOne notNope=notNope}
+      """,
+      """
+      @{//strange type for add below
+        n=@{//promised to propagate extra fields on the result
+          s={//but the runtime does not keep them.
+            A:@{//so I tried to make a 'notZero' with an extra 'nope' field.
+              add={ B:@{succ={()->B};...} -> B };
+              pred={C->A};
+              succ={D->A}
+              }
+            ->A
+            };
+          z=A
+          };//accessing the field fails
+        notNope=MissingfieldnopeinA:@{
+          add={B:@{succ={()->B};...}->B};
+          pred={C->A};
+          succ={()->A}
+          };//but if you comment the output in the record, again we get no visible type error out :-(
+        notOne=E:@{//the computed type of notOne does not respect the promises of the add method.
+          add={ F:@{succ={()->F};...}->F };
+          pred={G->E};
+          succ={()->E}
+          };
+        one=H:@{//one.add should keep extra fields of the I parameter, but it does not.
+          add={I:@{succ={()->I};...}->I};
+          pred={J->H};
+          succ={K->H}
+          }
+        }
+      """);}
   @Test public void testBoolsBaseNatOut() {ok("""
     void = @{};
     err  = {unused->(err unused)};
@@ -442,150 +520,241 @@ public class TestHMMarco {
         or       = {o -> o}
         thenElse = {then else->(else void) }      
         };
-      @{true=true, false=false};
+      @{true=true false=false};
     n=
       z = @{
-        isZero = {unused ->b.true},
+        isZero = {unused ->b.true}
         pred   = err
-        succ   = {unused -> (n.s n.z)},
+        succ   = {unused -> (n.s n.z)}
         add    = {o-> o}
         };
       s = {pred ->
         self=@{
-          isZero = {unused ->b.false},
-          pred   = {unused->pred},
-          succ   = {unused -> (n.s self)},
+          isZero = {unused ->b.false}
+          pred   = {unused->pred}
+          succ   = {unused -> (n.s self)}
           add    = {m -> ((pred.add m).succ void)}
           };
         self
         };
-      @{s=s, z=z};
+      @{s=s z=z};
     notOne = (n.s @{
-        isZero = {unused ->b.true},
+        isZero = {unused ->b.true}
         pred   = err
-        succ   = {unused -> (n.s n.z)},
+        succ   = {unused -> (n.s n.z)}
         add    = {o-> o}
         nope   = void
         });
     one = (n.s n.z);
     two = (one.add one);
     three =(n.s two);
-    @{b=b,n=n, one=one,two=two,three=three, notOne=notOne}
-    ""","""
+    @{b=b n=n one=one two=two three=three notOne=notOne}
+    """,
+    """
     @{
       b=@{
         false=A:@{
-          and={B->A},
-          or={C->C},
-          thenElse={D{()->E}->E}},
+          and={B->A};
+          or={C->C};
+          thenElse={ D  {()->E}->E }
+          };
         true=F:@{
-          and={G->G},
-          or={H->F},
-          thenElse={{()->I}J->I}
+          and={G->G};
+          or={H->F};
+          thenElse={ {()->I} J ->I}
           }
-        },
+        };
       n=@{
         s={
           K:@{
-            add={  L:@{succ={()->L}}->L  },
+            add={
+              L:@{ succ={()->L}; ...}
+              -> L
+              };
             isZero={
-              M->
+              M ->
               N:@{
-                and={N->N},
-                or={N->N},
-                thenElse={{()->O}{()->O}->O}
+                and={N->N};
+                or={N->N};
+                thenElse={ {()->O} {()->O} ->O }
                 }
-              },
-            pred={P->K},
+              };
+            pred={P->K};
             succ={Q->K}
             }
           ->K
-          },
+          };
         z=K
-        },
+        };
       notOne=R:@{
-        add={  S:@{succ={()->S}}->S  },
+        add={ S:@{succ={()->S};...} -> S};
         isZero={
           T->
           U:@{
-            and={U->U},
-            or={U->U},
+            and={U->U};
+            or={U->U};
+            thenElse={{()->V22} {()->V22}->V22}
+            }
+          };
+        pred={V23->R};
+        succ={V24->R}
+        };
+      one=V25:@{
+        add={V26:@{succ={()->V26};...}->V26};
+        isZero={
+          V27->
+          V28:@{
+            and={V28->V28};
+            or={V28->V28};
+            thenElse={{()->V29}{()->V29}->V29}
+            }
+          };
+        pred={V30->V25};
+        succ={V31->V25}
+        };
+      three=V32:@{
+        add={V33:@{succ={()->V33};...}->V33};
+        isZero={
+          V34->
+          V35:@{
+            and={V35->V35};
+            or={V35->V35};
+            thenElse={{()->V36}{()->V36}->V36}
+            }
+          };
+        pred={V37->V32};
+        succ={()->V32}
+        };
+      two=V38:@{
+        add={V39:@{succ={()->V39};...}->V39};
+        isZero={
+          V40->
+          V41:@{
+            and={V41->V41};
+            or={V41->V41};
+            thenElse={{()->V42}{()->V42}->V42}
+            }
+          };
+        pred={V43->V38};
+        succ={()->V38}
+        }
+      }
+    """
+    /*"""
+    @{
+      b=@{
+        false=A:@{
+          and={B->A};
+          or={C->C};
+          thenElse={D{()->E}->E}};
+        true=F:@{
+          and={G->G};
+          or={H->F};
+          thenElse={{()->I}J->I}
+          }
+        };
+      n=@{
+        s={
+          K:@{
+            add={  L:@{succ={()->L};...}->L  };
+            isZero={
+              M->
+              N:@{
+                and={N->N};
+                or={N->N};
+                thenElse={{()->O}{()->O}->O}
+                }
+              };
+            pred={P->K};
+            succ={Q->K}
+            }
+          ->K
+          };
+        z=K
+        };
+      notOne=R:@{
+        add={  S:@{succ={()->S};...}->S  };
+        isZero={
+          T->
+          U:@{
+            and={U->U};
+            or={U->U};
             thenElse={ {()->V21}{()->V21}->V21} 
             }
-          },
+          };
         nope=Missing field nope in A:@{
-          add={  B:@{succ={()->B}}->B  },
+          add={  B:@{succ={()->B}}->B  };
           isZero={
             C->
             D:@{
-              and={D->D},
-              or={D->D},
+              and={D->D};
+              or={D->D};
               thenElse={{()->E}{()->E}->E}
               }
-            },
-          pred={F->A},
+            };
+          pred={F->A};
           succ={G->A}
-          },
-        pred={V22->R},
+          };
+        pred={V22->R};
         succ={V23->R}
-        },
+        };
       one=V24:@{
-        add={V25:@{succ={()->V25}}->V25},
+        add={V25:@{succ={()->V25}}->V25};
         isZero={
           V26->
-          V27:@{and={V27->V27},or={V27->V27},thenElse={{()->V28}{()->V28}->V28}}
-          },
-        pred={V29->V24},
+          V27:@{and={V27->V27};or={V27->V27};thenElse={{()->V28}{()->V28}->V28}}
+          };
+        pred={V29->V24};
         succ={V30->V24}
-        },
+        };
       three=V31:@{
-        add={V32:@{succ={()->V32}}->V32},
+        add={V32:@{succ={()->V32}}->V32};
         isZero={
           V33->
-          V34:@{and={V34->V34},or={V34->V34},thenElse={{()->V35}{()->V35}->V35}}
-          },
-        pred={V36->V31},
+          V34:@{and={V34->V34};or={V34->V34};thenElse={{()->V35}{()->V35}->V35}}
+          };
+        pred={V36->V31};
         succ={()->V31}
-        },
+        };
       two=V37:@{
-        add={V38:@{succ={()->V38}}->V38},
+        add={V38:@{succ={()->V38}}->V38};
         isZero={
           V39->
-          V40:@{and={V40->V40},or={V40->V40},thenElse={{()->V41}{()->V41}->V41}}
-          },
-        pred={V42->V37},
+          V40:@{and={V40->V40};or={V40->V40};thenElse={{()->V41}{()->V41}->V41}}
+          };
+        pred={V42->V37};
         succ={()->V37}
         }
       }
-      """);}
+      """*/);}
 
   @Test public void testLists() {ok("""
     all=
       """
-    +goodBaseBool
+    +goodBaseBool//TODO: the concat method looks ill typed
     +goodBaseNat+"""
     empty = @{
-      isEmpty = {unused ->all.true},
-      pop     = err,
-      top     = err,
-      push    = {elem -> (all.cons elem all.empty)},
-      concat  = {n-> n},
-      size    = {unused ->all.z},
+      isEmpty = {unused ->all.true}
+      pop     = err
+      top     = err
+      push    = {elem -> (all.cons elem all.empty)}
+      concat  = {n-> n}
+      size    = {unused ->all.z}
       };
     cons = {elem tail ->
       self=@{
-        isEmpty = {unused ->all.false},
-        pop     = {unused->tail},
-        top     = {unused->elem},
-        push    = {elem -> (all.cons elem self)},
+        isEmpty = {unused ->all.false}
+        pop     = {unused->tail}
+        top     = {unused->elem}
+        push    = {elem -> (all.cons elem self)}
         concat  = {m -> 
           (((self.pop void).concat m).push (self.top void))
           }
-        size    = {unused ->(all.s (tail.size void))},
+        size    = {unused ->(all.s (tail.size void))}
         };
       self
       };
-      @{true=true, false=false, z=z, s=s, empty=empty,cons=cons};
+      @{true=true false=false z=z s=s empty=empty cons=cons};
     all
     ""","""
     @{
@@ -593,34 +762,34 @@ public class TestHMMarco {
         A
         B:@{
           concat={
-            C:@{push={A->C}}
+            C:@{push={A->C};...}
             ->C
-            },
+            };
           isEmpty={
             D
             ->E:@{
-              and     ={E->E},
-              or      ={E->E},
+              and     ={E->E};
+              or      ={E->E};
               thenElse={{()->F}{()->F}->F}}
-            },
-          pop={()->B},
-          push={A->B},
+            };
+          pop={()->B};
+          push={A->B};
           size={()->
             G:@{
-              add={G->G},
-              isZero={H->E},
-              pred={I->G},
+              add={G->G};
+              isZero={H->E};
+              pred={I->G};
               succ={()->G}
               }
-            },
+            };
           top={()->A}
         }
       ->B
-      },
-    empty=B,
-    false=E,
-    s={G->G},
-    true=E,
+      };
+    empty=B;
+    false=E;
+    s={G->G};
+    true=E;
     z=G
     }
     """);}
@@ -644,22 +813,22 @@ public class TestHMMarco {
     @{a=a b=b bool=bool}
     ""","""
     @{
-      a=nint8,
-      b=(),
+      a=nint8;
+      b=();
       bool=@{
         false=A:@{
-          and={A->A},
-          or={A->A},
+          and={A->A};
+          or={A->A};
           thenElse={ {()->B} {()->B}  ->  B }
-          },
+          };
         force={C? -> D:@{
-          and={D->D},
-          or={D->D},
+          and={D->D};
+          or={D->D};
           thenElse={ {()->E} {()->E}  ->  E }
-          }},
+          }};
         true=F:@{
-          and={F->F},
-          or={F->F},
+          and={F->F};
+          or={F->F};
           thenElse={ {()->G} {()->G}  ->  G }
           }
         }
